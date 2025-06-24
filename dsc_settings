@@ -1,92 +1,59 @@
 // === dsc_settings.lsl ===
-// Handles persistent storage of collar settings via link messages
+// Settings plugin for DS Collar (DSC)
 
-integer LM_PLUGIN_REG_REQUEST  = -7000; // Request plugin registrations
-integer LM_PLUGIN_REG_RESPONSE = -7001; // Plugin registration response
+integer LM_SETTING_REQUEST     = -5000;
+integer LM_SETTING_RESPONSE    = -5001;
+integer LM_SETTING_SAVE        = -5002;
+integer LM_SETTING_DELETE      = -5003;
 
-integer LM_SETTING_SAVE     = -5002; // Save setting: msg format "setting_key|setting_value"
-integer LM_SETTING_DELETE   = -5003; // Delete setting: msg = setting_key
-integer LM_SETTING_REQUEST  = -5000; // Request setting: msg = setting_key
-integer LM_SETTING_RESPONSE = -5001; // Response with setting: msg = "setting_key|setting_value"
+integer LM_PLUGIN_REG_REQUEST  = -7000;
+integer LM_PLUGIN_REG_RESPONSE = -7001;
 
-list g_settings = []; // Store settings as ["setting_key1", "setting_value1", "setting_key2", "setting_value2", ...]
+integer LM_MENU_RESPONSE       = -4001;
 
- SaveSetting(string setting_key, string setting_value)
-{
-    integer idx = llListFindList(g_settings, [setting_key]);
-    if (idx != -1)
-    {
-        // Update existing value
-        idx++;
-        g_settings = llListReplaceList(g_settings, [setting_value], idx, idx);
-    }
-    else
-    {
-        // Append new key and value
-        g_settings += [setting_key, setting_value];
-    }
-}
+key g_owner = NULL_KEY;
 
- DeleteSetting(string setting_key)
-{
-    integer idx = llListFindList(g_settings, [setting_key]);
-    if (idx != -1)
-    {
-        g_settings = llDeleteSubList(g_settings, idx, idx + 1);
-    }
-}
-
-string GetSetting(string setting_key)
-{
-    integer idx = llListFindList(g_settings, [setting_key]);
-    if (idx != -1)
-    {
-        return llList2String(g_settings, idx + 1);
-    }
-    return "";
-}
+list g_settings_keys = [];
+list g_settings_values = [];
 
 default
 {
     state_entry()
     {
         llOwnerSay("[SETTINGS] Plugin initialized and listening.");
+        llMessageLinked(LINK_SET, LM_PLUGIN_REG_REQUEST, "", NULL_KEY);
     }
 
     link_message(integer sender, integer num, string msg, key id)
     {
         if (num == LM_PLUGIN_REG_REQUEST)
         {
-            // Reply to core with plugin registration info
             string reg_msg = "Settings|dsc_settings|0|Backend";
             llMessageLinked(LINK_SET, LM_PLUGIN_REG_RESPONSE, reg_msg, NULL_KEY);
             return;
         }
 
-        if (num == LM_PLUGIN_REG_RESPONSE)
+        if (num == LM_MENU_RESPONSE)
         {
-            // Ignore plugin registration responses sent by other plugins
+            // Ignore menu responses here
             return;
         }
 
-        // Handle other link messages here as needed
-
-        llOwnerSay("[SETTINGS] Unhandled link_message: num=" + (string)num + " msg=" + msg);
-    }
-
-    listen(integer channel, string name, key id, string msg)
-    {
-        // Implement listen handling if needed
-    }
-
-    timer()
-    {
-        // Implement timer event if needed
-    }
-
-    touch_start(integer total_number)
-    {
-        // Implement touch handling if needed
+        if (num == LM_SETTING_SAVE)
+        {
+            // Save setting logic here (not shown)
+        }
+        else if (num == LM_SETTING_REQUEST)
+        {
+            // Setting request logic here (not shown)
+        }
+        else if (num == LM_SETTING_DELETE)
+        {
+            // Delete setting logic here (not shown)
+        }
+        else
+        {
+            llOwnerSay("[SETTINGS] Unhandled link_message: num=" + (string)num + " msg=" + msg);
+        }
     }
 }
-
