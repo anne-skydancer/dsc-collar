@@ -148,7 +148,7 @@ default
         {
             // Handle menu responses here and do NOT forward back to core to avoid loops
             llOwnerSay("[MENU] Received menu response: " + msg);
-            // Could add more handling logic if needed
+            // Optional: Add any local handling logic if needed
         }
         else
         {
