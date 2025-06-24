@@ -92,6 +92,13 @@ default
     state_entry()
     {
         g_core = llGetOwner(); // or LINK_THIS if in same object
+
+        // Clear plugin lists on start to avoid stale data
+        g_ui_labels = [];
+        g_ui_plugins = [];
+        g_ui_acls = [];
+        g_ui_types = [];
+
         RegisterSelf();
     }
 
@@ -104,39 +111,37 @@ default
         }
         else if (num == LM_PLUGIN_REG_RESPONSE)
         {
-            // Core sent list of plugins registered, parse and filter by type UI
             if (msg != "")
             {
                 list parts = llParseString2List(msg, ["|"], []);
 
-                integer count = llGetListLength(parts);
-
-                // Clear current UI plugin lists
-                g_ui_labels = [];
-                g_ui_plugins = [];
-                g_ui_acls = [];
-                g_ui_types = [];
-
-                integer i;
-                for (i = 0; i + 3 < count; i += 4)
+                if (llGetListLength(parts) == 4)
                 {
-                    string label = llList2String(parts, i);
-                    string plugin = llList2String(parts, i + 1);
-                    integer acl = (integer)llList2String(parts, i + 2);
-                    string type = llList2String(parts, i + 3);
+                    string label = llList2String(parts, 0);
+                    string plugin = llList2String(parts, 1);
+                    integer acl = (integer)llList2String(parts, 2);
+                    string type = llList2String(parts, 3);
 
                     if (type == "UI")
                     {
-                        g_ui_labels += [label];
-                        g_ui_plugins += [plugin];
-                        g_ui_acls += [acl];
-                        g_ui_types += [type];
+                        // Only add if not already present
+                        integer idx = llListFindList(g_ui_plugins, [plugin]);
+                        if (idx == -1)
+                        {
+                            g_ui_labels += [label];
+                            g_ui_plugins += [plugin];
+                            g_ui_acls += [acl];
+                            g_ui_types += [type];
+                        }
                     }
-                }
-                // Reset page when plugins updated
-                g_menu_page = 0;
 
-                llOwnerSay("[MENU DEBUG] Total UI plugins registered: " + (string)llGetListLength(g_ui_labels));
+                    llOwnerSay("[MENU DEBUG] Registered plugin: " + label + " (" + plugin + ") ACL: " + (string)acl + " Type: " + type);
+                    llOwnerSay("[MENU DEBUG] Total UI plugins registered: " + (string)llGetListLength(g_ui_labels));
+                }
+                else
+                {
+                    llOwnerSay("[MENU DEBUG] Unexpected plugin registration format: " + msg);
+                }
             }
         }
         else if (num == LM_MENU_REQUEST)
@@ -148,7 +153,7 @@ default
         {
             // Handle menu responses here and do NOT forward back to core to avoid loops
             llOwnerSay("[MENU] Received menu response: " + msg);
-            // Optional: Add any local handling logic if needed
+            // Could add more handling logic if needed
         }
         else
         {
