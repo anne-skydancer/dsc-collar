@@ -1,15 +1,15 @@
 // === dsc_auth.lsl ===
 // Authorization plugin for DS Collar (DSC)
 
-// Link message channels (must match core)
 integer LM_AUTH_CHECK          = -3000;
 integer LM_AUTH_RESULT         = -3001;
 integer LM_AUTH_WEARER_UPDATE  = -3002;
 
+integer LM_MENU_RESPONSE       = -4001; 
+
 integer LM_PLUGIN_REG_REQUEST  = -7000;
 integer LM_PLUGIN_REG_RESPONSE = -7001;
 
-// ACL levels
 integer ACL_NO_ACCESS  = -1;
 integer ACL_BACKEND    = 0;
 integer ACL_PUBLIC     = 1;
@@ -17,14 +17,12 @@ integer ACL_WEARER     = 2;
 integer ACL_ADMIN      = 3;
 integer ACL_ROOT       = 4;
 
-// Global state
 key g_wearer = NULL_KEY;
 
-list g_owners = [];    // list of keys with root level access
-list g_trusted = [];   // list of keys with admin level access
-list g_blacklist = []; // list of keys with no access
+list g_owners = [];
+list g_trusted = [];
+list g_blacklist = [];
 
-// Helper function to get ACL for a user key
 integer GetACLForUser(key user)
 {
     if (llListFindList(g_blacklist, [user]) != -1) return ACL_NO_ACCESS;
@@ -45,50 +43,31 @@ default
     {
         if (num == LM_PLUGIN_REG_REQUEST)
         {
-            // Respond to core plugin registration requests
             string reg_msg = "Auth|dsc_auth|0|Backend";
             llMessageLinked(LINK_SET, LM_PLUGIN_REG_RESPONSE, reg_msg, NULL_KEY);
             return;
         }
 
-        if (num == LM_PLUGIN_REG_RESPONSE)
+        if (num == LM_MENU_RESPONSE)
         {
-            // Ignore: these are for core only
+            // Ignore menu responses here
             return;
         }
 
         if (num == LM_AUTH_WEARER_UPDATE)
         {
-            // Update wearer key
-            if (id != NULL_KEY)
-            {
-                g_wearer = id;
-                llOwnerSay("[AUTH] Wearer updated to: " + (string)g_wearer);
-            }
-            else
-            {
-                g_wearer = NULL_KEY;
-                llOwnerSay("[AUTH] Wearer cleared.");
-            }
-            return;
+            g_wearer = id;
+            llOwnerSay("[AUTH] Wearer updated to: " + (string)g_wearer);
         }
-
-        if (num == LM_AUTH_CHECK)
+        else if (num == LM_AUTH_CHECK)
         {
-            // ACL level request for user 'id'
-            integer acl_level = ACL_PUBLIC;
-            if (id != NULL_KEY)
-            {
-                acl_level = GetACLForUser(id);
-                llOwnerSay("[AUTH] ACL check for user " + (string)id + ": " + (string)acl_level);
-            }
-
-            // Reply with ACL level as string on LM_AUTH_RESULT channel
-            llMessageLinked(LINK_SET, LM_AUTH_RESULT, (string)acl_level, id);
-            return;
+            integer acl = GetACLForUser(id);
+            llMessageLinked(LINK_SET, LM_AUTH_RESULT, (string)acl, id);
+            llOwnerSay("[AUTH] ACL check for user " + (string)id + ": " + (string)acl);
         }
-
-        // Unhandled messages
-        llOwnerSay("[AUTH] Unhandled link_message: num=" + (string)num + " msg=" + msg);
+        else
+        {
+            llOwnerSay("[AUTH] Unhandled link_message: num=" + (string)num + " msg=" + msg);
+        }
     }
 }
