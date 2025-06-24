@@ -1,41 +1,46 @@
 // === dsc_menu.lsl ===
 // Minimal menu plugin for DS Collar
-// Registers to core as Backend and shows simple paginated list of UI plugins
+// Registers to core and shows simple paginated list of UI plugins
 // Fixed buttons: Back, Cancel, Next
 
+// Link message channels (match core)
 integer LM_PLUGIN_REG_REQUEST  = -7000;
 integer LM_PLUGIN_REG_RESPONSE = -7001;
 
 integer LM_MENU_REQUEST        = -4000;
 integer LM_MENU_RESPONSE       = -4001;
 
-integer DIALOG_CHANNEL         = -8000;  // reserved dialog response channel
+integer DIALOG_CHANNEL         = -8000;  // reserved channel for dialog responses
 
+// State constants
 integer STATE_IDLE = 0;
 integer STATE_MENU = 1;
 
+// Global variables
 integer g_state = STATE_IDLE;
 
-key     g_core = NULL_KEY;
+key     g_core = NULL_KEY;  // core key for link messages, usually LINK_THIS
 key     g_currentUser = NULL_KEY;
 
-list    g_ui_labels = [];   // plugin friendly names (labels)
-list    g_ui_plugins = [];  // plugin script names
-list    g_ui_acls = [];     // plugin ACLs (not used here)
-list    g_ui_types = [];    // plugin types
+list    g_ui_labels = [];   // Labels of UI plugins
+list    g_ui_plugins = [];  // Plugin names
+list    g_ui_acls = [];     // ACLs for plugins
+list    g_ui_types = [];    // Types of plugins
 
 integer g_menu_page = 0;
-integer ITEMS_PER_PAGE = 6;
+integer ITEMS_PER_PAGE = 6; // items per page, adjust for dialog space
 
+// Fixed button labels
 string BUTTON_BACK = "Back";
 string BUTTON_CANCEL = "Cancel";
 string BUTTON_NEXT = "Next";
 
+// Listen handle for dialog responses
 integer g_listen_handle = -1;
 
 RegisterSelf()
 {
-    // Register as Backend so menu itself is hidden from UI menu
+    // Register with core on plugin reg request
     llMessageLinked(LINK_SET, LM_PLUGIN_REG_RESPONSE, "Menu|dsc_menu|1|Backend", NULL_KEY);
 }
 
@@ -46,23 +51,35 @@ ShowMenu(key user)
 
     integer start = g_menu_page * ITEMS_PER_PAGE;
     integer end = start + ITEMS_PER_PAGE - 1;
+
     integer total_items = llGetListLength(g_ui_labels);
 
     list menu_items = [];
+
     integer i;
     for (i = start; i <= end && i < total_items; i++)
     {
         menu_items += [llList2String(g_ui_labels, i)];
     }
 
-    if (g_menu_page > 0) menu_items += [BUTTON_BACK];
+    // Add fixed buttons at bottom
+    if (g_menu_page > 0)
+    {
+        menu_items += [BUTTON_BACK];
+    }
     menu_items += [BUTTON_CANCEL];
-    if ((g_menu_page + 1) * ITEMS_PER_PAGE < total_items) menu_items += [BUTTON_NEXT];
+    if ((g_menu_page + 1) * ITEMS_PER_PAGE < total_items)
+    {
+        menu_items += [BUTTON_NEXT];
+    }
 
+    // Remove any previous listen handle before starting a new one
     if (g_listen_handle != -1)
     {
         llListenRemove(g_listen_handle);
     }
+
+    // Start listening for responses on dialog channel
     g_listen_handle = llListen(DIALOG_CHANNEL, "", NULL_KEY, "");
 
     llDialog(user, "Select a plugin (Page " + (string)(g_menu_page + 1) + " of " + (string)((total_items + ITEMS_PER_PAGE - 1)/ITEMS_PER_PAGE) + ")", menu_items, DIALOG_CHANNEL);
@@ -74,7 +91,7 @@ default
 {
     state_entry()
     {
-        g_core = llGetOwner(); // or LINK_THIS if needed
+        g_core = llGetOwner(); // or LINK_THIS if in same object
         RegisterSelf();
     }
 
@@ -82,16 +99,19 @@ default
     {
         if (num == LM_PLUGIN_REG_REQUEST)
         {
+            // Core is asking plugins to register
             RegisterSelf();
         }
         else if (num == LM_PLUGIN_REG_RESPONSE)
         {
+            // Core sent list of plugins registered, parse and filter by type UI
             if (msg != "")
             {
                 list parts = llParseString2List(msg, ["|"], []);
+
                 integer count = llGetListLength(parts);
 
-                // Clear lists before re-populating
+                // Clear current UI plugin lists
                 g_ui_labels = [];
                 g_ui_plugins = [];
                 g_ui_acls = [];
@@ -113,12 +133,26 @@ default
                         g_ui_types += [type];
                     }
                 }
+                // Reset page when plugins updated
                 g_menu_page = 0;
+
+                llOwnerSay("[MENU DEBUG] Total UI plugins registered: " + (string)llGetListLength(g_ui_labels));
             }
         }
         else if (num == LM_MENU_REQUEST)
         {
+            // Show menu when core requests
             ShowMenu(id);
+        }
+        else if (num == LM_MENU_RESPONSE)
+        {
+            // Handle menu responses here and do NOT forward back to core to avoid loops
+            llOwnerSay("[MENU] Received menu response: " + msg);
+            // Could add more handling logic if needed
+        }
+        else
+        {
+            llOwnerSay("[MENU] Unhandled link_message: num=" + (string)num + " msg=" + msg);
         }
     }
 
@@ -131,6 +165,7 @@ default
         {
             llSay(0, "Menu canceled.");
             g_state = STATE_IDLE;
+
             if (g_listen_handle != -1)
             {
                 llListenRemove(g_listen_handle);
@@ -159,21 +194,26 @@ default
         }
         else
         {
-            // Send selected plugin label as menu response for core or plugin handling
-            llMessageLinked(LINK_SET, LM_MENU_RESPONSE, message, g_currentUser);
+            // For now, just acknowledge selection
+            llSay(0, "Selected plugin: " + message);
 
-            // Close menu and stop listening
+            // After selection, close menu and remove listen
             g_state = STATE_IDLE;
+
             if (g_listen_handle != -1)
             {
                 llListenRemove(g_listen_handle);
                 g_listen_handle = -1;
             }
+
+            // Inform core about the selected plugin by sending LM_MENU_RESPONSE to LINK_SET
+            llMessageLinked(LINK_SET, LM_MENU_RESPONSE, message, g_currentUser);
         }
     }
 
     touch_start(integer total_number)
     {
+        // For testing: open menu on touch
         key toucher = llDetectedKey(0);
         ShowMenu(toucher);
     }
