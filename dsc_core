@@ -1,81 +1,99 @@
 // === dsc_core.lsl ===
 // Core script for DS Collar (DSC)
-// Minimal core: wearer detection, interaction dispatch, plugin registration
 
-// Link message channels (negative for convention)
-integer LM_AUTH_CHECK          = -3000; // request ACL for a user
-integer LM_AUTH_RESULT         = -3001; // ACL response
-integer LM_AUTH_WEARER_UPDATE  = -3002; // notify auth plugin of wearer
+integer LM_AUTH_CHECK          = -3000;
+integer LM_AUTH_RESULT         = -3001;
+integer LM_AUTH_WEARER_UPDATE  = -3002;
 
-integer LM_PLUGIN_REG_REQUEST  = -7000; // request plugin registrations
-integer LM_PLUGIN_REG_RESPONSE = -7001; // plugin registration response
+integer LM_PLUGIN_REG_REQUEST  = -7000;
+integer LM_PLUGIN_REG_RESPONSE = -7001;
 
-integer LM_MENU_REQUEST        = -4000; // request menu build
-integer LM_MENU_RESPONSE       = -4001; // menu response (not handled here, but relayed)
+integer LM_SETTING_REQUEST     = -5000;
+integer LM_SETTING_RESPONSE    = -5001;
+
+integer LM_MENU_REQUEST        = -4000;
+integer LM_MENU_RESPONSE       = -4001;
 
 integer DIALOG_CHANNEL         = -8000;
 
-// ACL levels (for reference only, real check done in auth)
-integer ACL_NO_ACCESS = -1;
+integer ACL_NO_ACCESS          = -1;
+integer ACL_BACKEND            = 0;
+integer ACL_PUBLIC             = 1;
+integer ACL_WEARER             = 2;
+integer ACL_ADMIN              = 3;
+integer ACL_ROOT               = 4;
 
-// State constants
-integer STATE_IDLE = 0;
+integer STATE_IDLE             = 0;
+integer STATE_MENU             = 1;
 
-key g_wearer = NULL_KEY;
-key g_currentUser = NULL_KEY;
-integer g_state = STATE_IDLE;
+key     g_wearer              = NULL_KEY;
+key     g_currentUser          = NULL_KEY;
+integer g_authLevel            = ACL_NO_ACCESS;
+integer g_state                = STATE_IDLE;
 
-// Registered plugins info (parallel lists)
-list g_registered_plugins = [];
-list g_registered_labels = [];
-list g_registered_acls = [];
-list g_registered_types = [];
+list    g_registered_plugins   = [];
+list    g_registered_labels    = [];
+list    g_registered_acls      = [];
+list    g_registered_types     = [];
+list    g_registered_parents   = [];
 
+integer g_menu_page            = 0;
+
+integer g_registration_expected = 3;  // Adjust as needed
+integer g_registration_count = 0;
+integer g_registration_timeout_handle = -1;
+
+integer REGISTRATION_TIMEOUT_SECONDS = 5;
+
+// Forward declarations
 RegisterWithPlugins()
 {
-    // Clear old plugin info
+    llMessageLinked(LINK_SET, LM_PLUGIN_REG_REQUEST, "", NULL_KEY);
+    g_registration_count = 0;
     g_registered_plugins = [];
     g_registered_labels = [];
     g_registered_acls = [];
     g_registered_types = [];
+    g_registered_parents = [];
 
-    // Request registrations
-    llMessageLinked(LINK_SET, LM_PLUGIN_REG_REQUEST, "", NULL_KEY);
+    if (g_registration_timeout_handle != -1)
+    {
+        llSetTimerEvent(0.0);
+        g_registration_timeout_handle = -1;
+    }
+
+    llSetTimerEvent(REGISTRATION_TIMEOUT_SECONDS);
+    g_registration_timeout_handle = 1; // flag
 }
 
 UpdateWearer(key wearer)
 {
-    if (g_wearer != wearer)
-    {
-        g_wearer = wearer;
-        // Notify auth plugin of new wearer
-        llMessageLinked(LINK_SET, LM_AUTH_WEARER_UPDATE, "", wearer);
-    }
+    g_wearer = wearer;
+    llMessageLinked(LINK_SET, LM_AUTH_WEARER_UPDATE, "", wearer);
 }
 
-RequestACLCheck(key user)
+ShowMenu()
 {
-    if (user != NULL_KEY)
-    {
-        llMessageLinked(LINK_SET, LM_AUTH_CHECK, "", user);
-    }
+    if (g_currentUser == NULL_KEY) return;
+    llMessageLinked(LINK_SET, LM_MENU_REQUEST, "", g_currentUser);
 }
 
-RequestMenu(key user)
+SendACLCheck(key user)
 {
-    if (user != NULL_KEY)
-    {
-        llMessageLinked(LINK_SET, LM_MENU_REQUEST, "", user);
-    }
+    if (user == NULL_KEY) return;
+    llMessageLinked(LINK_SET, LM_AUTH_CHECK, "", user);
 }
 
 default
 {
     state_entry()
     {
-        // Detect wearer (attached owner or none)
-        integer attached = llGetAttached();
-        if (attached != 0)
+        llOwnerSay("[CORE] Initializing collar core.");
+        g_state = STATE_IDLE;
+        g_menu_page = 0;
+
+        integer collarWorn = llGetAttached();
+        if (collarWorn != 0)
             g_wearer = llGetOwner();
         else
             g_wearer = NULL_KEY;
@@ -87,28 +105,20 @@ default
         UpdateWearer(g_wearer);
     }
 
-    touch_start(integer total_number)
+    timer()
     {
-        key interactingAvatar;
-        if (llGetAttached() != 0)
-            interactingAvatar = llGetOwner();
-        else
-            interactingAvatar = llDetectedKey(0);
-
-        g_currentUser = interactingAvatar;
-
-        // Update wearer if changed (wearer could be changed by interaction)
-        UpdateWearer(interactingAvatar);
-
-        // Request ACL for interacting user
-        RequestACLCheck(interactingAvatar);
+        if (g_registration_timeout_handle != -1)
+        {
+            llSetTimerEvent(0);
+            g_registration_timeout_handle = -1;
+            llOwnerSay("[CORE] Plugin registration completed. Total plugins registered: " + (string)llGetListLength(g_registered_plugins));
+        }
     }
 
     link_message(integer sender, integer num, string msg, key id)
     {
         if (num == LM_PLUGIN_REG_RESPONSE)
         {
-            // Plugin sent registration info: Label|plugin_name|acl|type
             if (msg != "")
             {
                 list parts = llParseString2List(msg, ["|"], []);
@@ -122,40 +132,78 @@ default
                     integer acl = (integer)llList2String(parts, i + 2);
                     string type = llList2String(parts, i + 3);
 
-                    // Add if new plugin
                     if (llListFindList(g_registered_plugins, [plugin]) == -1)
                     {
                         g_registered_labels += [label];
                         g_registered_plugins += [plugin];
                         g_registered_acls += [acl];
                         g_registered_types += [type];
+                        g_registered_parents += [""];
+                        g_registration_count++;
                     }
                 }
-                llOwnerSay("[CORE] Registered plugins: " + (string)llGetListLength(g_registered_plugins));
+                llOwnerSay("[CORE] Received plugin registrations, total so far: " + (string)g_registration_count);
+
+                if (g_registration_count >= g_registration_expected && g_registration_timeout_handle != -1)
+                {
+                    llSetTimerEvent(0);
+                    g_registration_timeout_handle = -1;
+                    llOwnerSay("[CORE] Registration complete early, total plugins: " + (string)g_registration_count);
+                }
             }
         }
         else if (num == LM_AUTH_RESULT)
         {
-            // Auth plugin responded with ACL level for current user
-            integer acl = (integer)msg;
-            llOwnerSay("[CORE] ACL level " + (string)acl + " for user " + (string)g_currentUser);
+            integer newLevel = (integer)msg;
+            g_authLevel = newLevel;
+            llOwnerSay("[CORE] ACL level " + (string)newLevel + " for user " + (string)g_currentUser);
 
-            // Request menu build for current user
-            RequestMenu(g_currentUser);
+            ShowMenu();
         }
         else if (num == LM_MENU_RESPONSE)
         {
-            // Menu response (e.g., dialog choice) - just log here or forward if needed
-            llOwnerSay("[CORE] Menu response: " + msg + " from " + (string)id);
-        }
-        else if (num == LM_PLUGIN_REG_REQUEST)
-        {
-            // Plugins ask core to register them: just ignore or log, core only sends request
-            llOwnerSay("[CORE] Received plugin reg request from " + (string)id);
+            // Forward menu response only to plugin whose label matches msg
+            integer index = llListFindList(g_registered_labels, [msg]);
+            if (index != -1)
+            {
+                string plugin = llList2String(g_registered_plugins, index);
+                llMessageLinked(LINK_SET, LM_MENU_RESPONSE, msg, id);
+                llOwnerSay("[CORE] Forwarded menu response '" + msg + "' to plugin " + plugin);
+            }
+            else
+            {
+                llOwnerSay("[CORE] No plugin matches menu response '" + msg + "'");
+            }
         }
         else
         {
-            llOwnerSay("[CORE] Unhandled link message num=" + (string)num + " msg=" + msg);
+            llOwnerSay("[CORE] Unhandled link_message: num=" + (string)num + " msg=" + msg);
         }
+    }
+
+    touch_start(integer total_number)
+    {
+        key interacting_avatar;
+        integer collarWorn = llGetAttached();
+
+        if (collarWorn != 0)
+        {
+            interacting_avatar = llGetOwner();
+        }
+        else
+        {
+            interacting_avatar = llDetectedKey(0);
+        }
+
+        g_currentUser = interacting_avatar;
+
+        llOwnerSay("[CORE] touch_start fired by " + (string)interacting_avatar);
+
+        if (g_wearer != interacting_avatar)
+        {
+            UpdateWearer(interacting_avatar);
+        }
+
+        SendACLCheck(interacting_avatar);
     }
 }
