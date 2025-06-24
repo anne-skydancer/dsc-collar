@@ -1,0 +1,161 @@
+// === dsc_core.lsl ===
+// Core script for DS Collar (DSC)
+// Minimal core: wearer detection, interaction dispatch, plugin registration
+
+// Link message channels (negative for convention)
+integer LM_AUTH_CHECK          = -3000; // request ACL for a user
+integer LM_AUTH_RESULT         = -3001; // ACL response
+integer LM_AUTH_WEARER_UPDATE  = -3002; // notify auth plugin of wearer
+
+integer LM_PLUGIN_REG_REQUEST  = -7000; // request plugin registrations
+integer LM_PLUGIN_REG_RESPONSE = -7001; // plugin registration response
+
+integer LM_MENU_REQUEST        = -4000; // request menu build
+integer LM_MENU_RESPONSE       = -4001; // menu response (not handled here, but relayed)
+
+integer DIALOG_CHANNEL         = -8000;
+
+// ACL levels (for reference only, real check done in auth)
+integer ACL_NO_ACCESS = -1;
+
+// State constants
+integer STATE_IDLE = 0;
+
+key g_wearer = NULL_KEY;
+key g_currentUser = NULL_KEY;
+integer g_state = STATE_IDLE;
+
+// Registered plugins info (parallel lists)
+list g_registered_plugins = [];
+list g_registered_labels = [];
+list g_registered_acls = [];
+list g_registered_types = [];
+
+RegisterWithPlugins()
+{
+    // Clear old plugin info
+    g_registered_plugins = [];
+    g_registered_labels = [];
+    g_registered_acls = [];
+    g_registered_types = [];
+
+    // Request registrations
+    llMessageLinked(LINK_SET, LM_PLUGIN_REG_REQUEST, "", NULL_KEY);
+}
+
+UpdateWearer(key wearer)
+{
+    if (g_wearer != wearer)
+    {
+        g_wearer = wearer;
+        // Notify auth plugin of new wearer
+        llMessageLinked(LINK_SET, LM_AUTH_WEARER_UPDATE, "", wearer);
+    }
+}
+
+RequestACLCheck(key user)
+{
+    if (user != NULL_KEY)
+    {
+        llMessageLinked(LINK_SET, LM_AUTH_CHECK, "", user);
+    }
+}
+
+RequestMenu(key user)
+{
+    if (user != NULL_KEY)
+    {
+        llMessageLinked(LINK_SET, LM_MENU_REQUEST, "", user);
+    }
+}
+
+default
+{
+    state_entry()
+    {
+        // Detect wearer (attached owner or none)
+        integer attached = llGetAttached();
+        if (attached != 0)
+            g_wearer = llGetOwner();
+        else
+            g_wearer = NULL_KEY;
+
+        g_currentUser = g_wearer;
+
+        RegisterWithPlugins();
+
+        UpdateWearer(g_wearer);
+    }
+
+    touch_start(integer total_number)
+    {
+        key interactingAvatar;
+        if (llGetAttached() != 0)
+            interactingAvatar = llGetOwner();
+        else
+            interactingAvatar = llDetectedKey(0);
+
+        g_currentUser = interactingAvatar;
+
+        // Update wearer if changed (wearer could be changed by interaction)
+        UpdateWearer(interactingAvatar);
+
+        // Request ACL for interacting user
+        RequestACLCheck(interactingAvatar);
+    }
+
+    link_message(integer sender, integer num, string msg, key id)
+    {
+        if (num == LM_PLUGIN_REG_RESPONSE)
+        {
+            // Plugin sent registration info: Label|plugin_name|acl|type
+            if (msg != "")
+            {
+                list parts = llParseString2List(msg, ["|"], []);
+                integer count = llGetListLength(parts);
+                integer i;
+
+                for (i = 0; i + 3 < count; i += 4)
+                {
+                    string label = llList2String(parts, i);
+                    string plugin = llList2String(parts, i + 1);
+                    integer acl = (integer)llList2String(parts, i + 2);
+                    string type = llList2String(parts, i + 3);
+
+                    // Add if new plugin
+                    if (llListFindList(g_registered_plugins, [plugin]) == -1)
+                    {
+                        g_registered_labels += [label];
+                        g_registered_plugins += [plugin];
+                        g_registered_acls += [acl];
+                        g_registered_types += [type];
+                    }
+                }
+                llOwnerSay("[CORE] Registered plugins: " + (string)llGetListLength(g_registered_plugins));
+            }
+        }
+        else if (num == LM_AUTH_RESULT)
+        {
+            // Auth plugin responded with ACL level for current user
+            integer acl = (integer)msg;
+            llOwnerSay("[CORE] ACL level " + (string)acl + " for user " + (string)g_currentUser);
+
+            // Request menu build for current user
+            RequestMenu(g_currentUser);
+        }
+        else if (num == LM_MENU_RESPONSE)
+        {
+            // Menu response (e.g., dialog choice) - just log here or forward if needed
+            llOwnerSay("[CORE] Menu response: " + msg + " from " + (string)id);
+        }
+        else if (num == LM_PLUGIN_REG_REQUEST)
+        {
+            // Plugins ask core to register them: just ignore or log, core only sends request
+            llOwnerSay("[CORE] Received plugin reg request from " + (string)id);
+        }
+        else
+        {
+            llOwnerSay("[CORE] Unhandled link message num=" + (string)num + " msg=" + msg);
+        }
+    }
+}
