@@ -1,73 +1,174 @@
-// === dsc_auth.lsl ===
-// Authorization plugin for DS Collar (DSC)
+// =============================================================
+//  Dynamic RP Collar – dsc_auth  (2025-06-25 – NO TERNARIES)
+// =============================================================
 
-integer LM_AUTH_CHECK          = -3000;
-integer LM_AUTH_RESULT         = -3001;
-integer LM_AUTH_WEARER_UPDATE  = -3002;
-
-integer LM_MENU_RESPONSE       = -4001; 
-
-integer LM_PLUGIN_REG_REQUEST  = -7000;
-integer LM_PLUGIN_REG_RESPONSE = -7001;
-
-integer ACL_NO_ACCESS  = -1;
-integer ACL_BACKEND    = 0;
-integer ACL_PUBLIC     = 1;
-integer ACL_WEARER     = 2;
-integer ACL_ADMIN      = 3;
-integer ACL_ROOT       = 4;
-
-key g_wearer = NULL_KEY;
-
-list g_owners = [];
-list g_trusted = [];
-list g_blacklist = [];
-
-integer GetACLForUser(key user)
+// ---------- channels ----------
+integer getChannelBase()
 {
-    if (llListFindList(g_blacklist, [user]) != -1) return ACL_NO_ACCESS;
-    if (llListFindList(g_owners, [user]) != -1) return ACL_ROOT;
-    if (llListFindList(g_trusted, [user]) != -1) return ACL_ADMIN;
-    if (user == g_wearer) return ACL_WEARER;
-    return ACL_PUBLIC;
+    integer tail = (integer)("0x" + llGetSubString((string)llGetKey(), -6, -1));
+    return -4000 - (tail & 0x0FFF);
 }
 
+integer CHANNEL_BASE;
+integer CHAN_CORE;
+integer CHAN_AUTH;
+integer CHAN_SETTINGS;
+integer CHAN_MENU;
+
+// ---------- ACL storage ----------
+key  gOwner;
+list gTrustees;          // max 4
+list gBlacklist;
+key  gWearer;
+
+// ---------- settings keys ----------
+string K_OWNER     = "ACL_OWNER";
+string K_TRUSTEES  = "ACL_TRUSTEES";
+string K_BLACKLIST = "ACL_BLACKLIST";
+
+// ---------- persistence wrappers ----------
+integer saveACL()
+{
+    llMessageLinked(LINK_THIS, CHAN_SETTINGS, "SET|" + K_OWNER     + "|" + (string)gOwner, NULL_KEY);
+    llMessageLinked(LINK_THIS, CHAN_SETTINGS, "SET|" + K_TRUSTEES  + "|" + llDumpList2String(gTrustees, ","), NULL_KEY);
+    llMessageLinked(LINK_THIS, CHAN_SETTINGS, "SET|" + K_BLACKLIST + "|" + llDumpList2String(gBlacklist, ","), NULL_KEY);
+    return 0;
+}
+
+integer loadACL()
+{
+    llMessageLinked(LINK_THIS, CHAN_SETTINGS, "GET|" + K_OWNER,     NULL_KEY);
+    llMessageLinked(LINK_THIS, CHAN_SETTINGS, "GET|" + K_TRUSTEES,  NULL_KEY);
+    llMessageLinked(LINK_THIS, CHAN_SETTINGS, "GET|" + K_BLACKLIST, NULL_KEY);
+    return 0;
+}
+
+// ---------- ACL helpers ----------
+integer aclOf(key av)
+{
+    if (av == NULL_KEY) return -1;
+    if (llListFindList(gBlacklist, [av]) != -1) return -1;
+    if (av == gOwner) return 4;
+    if (llListFindList(gTrustees, [av]) != -1) return 3;
+
+    if (av == gWearer)
+    {
+        if (gOwner == NULL_KEY)
+            return 4;          // wearer with no owner
+        else
+            return 2;          // wearer with owner
+    }
+
+    return 1;                  // public
+}
+
+integer addTrustee(key av)
+{
+    if (llListFindList(gTrustees, [av]) != -1) return 0;
+    if (llGetListLength(gTrustees) >= 4)       return 0;
+    gTrustees += av;
+    return 1;
+}
+
+integer delTrustee(key av)
+{
+    integer idx = llListFindList(gTrustees, [av]);
+    if (~idx) gTrustees = llDeleteSubList(gTrustees, idx, idx);
+    return 1;
+}
+
+// -------------------------------------------------------------
 default
 {
     state_entry()
     {
-        llOwnerSay("[AUTH] Authorization plugin started. Wearer: " + (string)g_wearer);
+        llSetRemoteScriptAccessPin(0);
+
+        CHANNEL_BASE  = getChannelBase();
+        CHAN_CORE     = CHANNEL_BASE - 0;
+        CHAN_AUTH     = CHANNEL_BASE - 1;
+        CHAN_SETTINGS = CHANNEL_BASE - 2;
+        CHAN_MENU     = CHANNEL_BASE - 3;
+
+        gWearer = llGetOwner();        // works for worn or rezzed
+        loadACL();
     }
 
-    link_message(integer sender, integer num, string msg, key id)
+    link_message(integer sender, integer channel, string msg, key id)
     {
-        if (num == LM_PLUGIN_REG_REQUEST)
+        // ---------- replies from Settings ----------
+        if (channel == CHAN_SETTINGS)
         {
-            string reg_msg = "Auth|dsc_auth|0|Backend";
-            llMessageLinked(LINK_SET, LM_PLUGIN_REG_RESPONSE, reg_msg, NULL_KEY);
+            list p = llParseString2List(msg, ["|"], []);
+            if (llList2String(p, 0) == "VAL")
+            {
+                string keyName  = llList2String(p, 1);
+                string cfgValue = llList2String(p, 2);
+
+                if (keyName == K_OWNER)
+                {
+                    gOwner = (key)cfgValue;
+                }
+                else if (keyName == K_TRUSTEES)
+                {
+                    if (cfgValue != "")
+                        gTrustees = llParseString2List(cfgValue, [","], []);
+                    else
+                        gTrustees = [];
+                }
+                else if (keyName == K_BLACKLIST)
+                {
+                    if (cfgValue != "")
+                        gBlacklist = llParseString2List(cfgValue, [","], []);
+                    else
+                        gBlacklist = [];
+                }
+            }
             return;
         }
 
-        if (num == LM_MENU_RESPONSE)
+        // ---------- Core broadcasts ----------
+        if (channel == CHAN_CORE && msg == "CORE|RELOAD")
         {
-            // Ignore menu responses here
+            saveACL();
+            llResetScript();
             return;
         }
 
-        if (num == LM_AUTH_WEARER_UPDATE)
+        // ---------- API calls ----------
+        if (channel != CHAN_AUTH) return;
+
+        list   t  = llParseString2List(msg, ["|"], []);
+        string op = llList2String(t, 0);
+
+        if (op == "QUERY")
         {
-            g_wearer = id;
-            llOwnerSay("[AUTH] Wearer updated to: " + (string)g_wearer);
+            key av = (key)llList2String(t, 1);
+            llMessageLinked(sender, CHAN_AUTH,
+                            "ACL|" + (string)av + "|" + (string)aclOf(av), NULL_KEY);
         }
-        else if (num == LM_AUTH_CHECK)
+        else if (op == "ADD")
         {
-            integer acl = GetACLForUser(id);
-            llMessageLinked(LINK_SET, LM_AUTH_RESULT, (string)acl, id);
-            llOwnerSay("[AUTH] ACL check for user " + (string)id + ": " + (string)acl);
+            integer lvl = (integer)llList2String(t, 1);
+            key av      = (key)llList2String(t, 2);
+
+            if (lvl == 4)       gOwner = av;
+            else if (lvl == 3)  addTrustee(av);
+            else if (lvl == -1) gBlacklist += av;
+
+            saveACL();
         }
-        else
+        else if (op == "DEL")
         {
-            llOwnerSay("[AUTH] Unhandled link_message: num=" + (string)num + " msg=" + msg);
+            key av = (key)llList2String(t, 1);
+
+            if (av == gOwner) gOwner = NULL_KEY;
+            delTrustee(av);
+
+            integer idx = llListFindList(gBlacklist, [av]);
+            if (~idx) gBlacklist = llDeleteSubList(gBlacklist, idx, idx);
+
+            saveACL();
         }
     }
 }
