@@ -1,268 +1,231 @@
 // =============================================================
-//  Dynamic RP Collar – dsc_menu  (2025-06-25, ternary-free)
+//  dsc_menu – Dynamic Collar Main Menu  (bottom-row nav, no ternary)
+//  28 Jun 2025
 // =============================================================
 
-// ---------- channel helpers ----------
-integer chanBase()
-{
-    integer tail = (integer)("0x" + llGetSubString((string)llGetKey(), -6, -1));
-    return -4000 - (tail & 0x0FFF);          // unique negative space
-}
+// ---------- TEMP debug helper ----------
+debug(string msg){ llOwnerSay("["+llGetScriptName()+"] "+msg); }
+// ---------------------------------------
 
 // ---------- constants ----------
+integer PAGE_SIZE    = 9;
+float   DIALOG_DELAY = 0.10;
+
+// ---------- channel map ----------
 integer CHANNEL_BASE;
 integer CHAN_CORE;
 integer CHAN_AUTH;
-integer CHAN_SETTINGS;
 integer CHAN_MENU;
+integer DIALOG_CHAN;
 
-integer DIALOG_CHAN;                         // private chat channel
-integer PAGE_SIZE = 9;                       // plugin buttons per page
-
-// ---------- per-avatar session store ----------
-// gSessions = [avatar, page, csv, avatar, page, csv, …]
+// ---------- session store  [avatar, page, csv] ----------
 list gSessions;
 
-integer sessionIndex(key av)                 // –1 if not present
+// ---------- queued dialog list  [avatar, csvPiped, title] ----------
+list gDlgQ; integer timerRunning = FALSE;
+
+// =============================================================
+//                       helper functions
+// =============================================================
+integer calcBase()
 {
-    return llListFindList(gSessions, [av]);
+    integer tail = (integer)("0x"+llGetSubString((string)llGetKey(),-6,-1));
+    return -4000 - (tail & 0x0FFF);
 }
-integer sessionPage(key av)
+
+/* ---- session helpers ---- */
+integer sIdx(key av){ return llListFindList(gSessions,[av]); }
+integer sPage(key av){ integer i=sIdx(av); if(~i) return llList2Integer(gSessions,i+1); return 0;}
+string  sCSV(key av){ integer i=sIdx(av); if(~i) return llList2String(gSessions,i+2);  return "";}
+integer sSet(key av,integer pg,string csv)
 {
-    integer idx = sessionIndex(av);
-    if (~idx) return llList2Integer(gSessions, idx + 1);
+    integer i=sIdx(av);
+    if(~i) gSessions = llDeleteSubList(gSessions,i,i+2);
+    gSessions += [av,pg,csv]; return 0;
+}
+integer sClear(key av)
+{
+    integer i=sIdx(av);
+    if(~i) gSessions = llDeleteSubList(gSessions,i,i+2);
     return 0;
 }
-string sessionCSV(key av)
+
+/* ---- build buttons with nav row first (bottom) ---- */
+list buildButtons(string csv,integer page)
 {
-    integer idx = sessionIndex(av);
-    if (~idx) return llList2String(gSessions, idx + 2);
-    return "";
-}
-integer sessionSet(key av, integer page, string csv)
-{
-    integer idx = sessionIndex(av);
-    if (~idx) gSessions = llDeleteSubList(gSessions, idx, idx + 2);
-    gSessions += [av, page, csv];
-    return 0;
-}
-
-// ---------- dialog helpers ----------
-list buildButtons(string csv, integer page)
-{
-    /* ---------- build the nav row first (bottom row) ---------- */
-    string backBtn   = "<< BACK";
-    string cancelBtn = "CANCEL";
-    string nextBtn   = "NEXT >>";
-
-    if (page == 0)       backBtn = "<======>";
-    if (csv == "" ||                      // no plugins on last page
-        page * PAGE_SIZE + PAGE_SIZE >=
-        llGetListLength(llParseString2List(csv,[","],[])))
-        nextBtn = "<======>";
-
-    list buttons = [backBtn, cancelBtn, nextBtn];
-
-    /* ---------- add this page’s plugin names ---------- */
-    list names;
-    if (csv != "")
-        names = llParseString2List(csv,[","],[]);
+    list plugs;
+    if(csv != "")
+        plugs = llParseString2List(csv,[","],[]);
     else
-        names = [];
+        plugs = [];
 
-    integer total = llGetListLength(names);
+    integer total = llGetListLength(plugs);
     integer first = page * PAGE_SIZE;
     integer last  = first + PAGE_SIZE - 1;
-    if (last >= total) last = total - 1;
+    if(last >= total) last = total - 1;
+
+    string back = "<< BACK";
+    string next = "NEXT >>";
+    if(page == 0)       back = "<======>";
+    if(last == total-1) next = "<======>";
+
+    list out = [back,"CANCEL",next];        // nav row (bottom)
 
     integer i;
-    for (i = first; i <= last; ++i)
+    for(i = first; i <= last; ++i)
     {
-        string label = llList2String(names, i);
-        if (llStringLength(label) > 12)
-            label = llGetSubString(label, 0, 11);
-        buttons += label;
+        string lab = llList2String(plugs,i);
+        if(llStringLength(lab) > 12) lab = llGetSubString(lab,0,11);
+        out += lab;
     }
-
-    /* ---------- pad with single-space labels so plugin rows stay complete ---------- */
-    while (llGetListLength(buttons) % 3 != 0)
-        buttons += " ";
-
-    return buttons;
+    return out;
 }
 
-integer showMenu(key av, string csv, integer page)
+/* ---- dialog queue & debounce ---- */
+integer queueDialog(key av,list btn,string ttl)
 {
-    list pluginNames;
-    integer total;
-    if (csv != "")
-    {
-        pluginNames = llParseString2List(csv, [","], []);
-        total = llGetListLength(pluginNames);
-    }
-    else
-    {
-        pluginNames = [];
-        total = 0;
-    }
-
-    integer pagesCount = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-    list buttons = buildButtons(csv, page);
-
-    string title = "Collar Menu (" + (string)(page + 1) + "/" + (string)pagesCount + ")";
-    llDialog(av, title, buttons, DIALOG_CHAN);
+    gDlgQ += [av,llDumpList2String(btn,"|"),ttl];
+    if(!timerRunning)
+    { llSetTimerEvent(DIALOG_DELAY); timerRunning = TRUE; }
     return 0;
 }
 
-// ---------- memory watchdog ----------
-integer checkMemory()
-{
-    if (llGetFreeMemory() < 2048)
-        llOwnerSay("Warning: collar scripts have < 2 kB free memory.");
-    return 0;
-}
-
-// -------------------------------------------------------------
+// =============================================================
+//                          MAIN
+// =============================================================
 default
 {
     state_entry()
     {
-        llSetRemoteScriptAccessPin(0);       // security
+        CHANNEL_BASE = calcBase();
+        CHAN_CORE    = CHANNEL_BASE - 0;
+        CHAN_AUTH    = CHANNEL_BASE - 1;
+        CHAN_MENU    = CHANNEL_BASE - 3;
+        DIALOG_CHAN  = CHANNEL_BASE - 100;
 
-        CHANNEL_BASE  = chanBase();
-        CHAN_CORE     = CHANNEL_BASE - 0;
-        CHAN_AUTH     = CHANNEL_BASE - 1;
-        CHAN_SETTINGS = CHANNEL_BASE - 2;
-        CHAN_MENU     = CHANNEL_BASE - 3;
-
-        DIALOG_CHAN   = CHANNEL_BASE - 100;  // separate private channel
-        llListen(DIALOG_CHAN, "", NULL_KEY, "");
-
-        checkMemory();
+        llListen(DIALOG_CHAN,"",NULL_KEY,"");
+        debug("boot on CH-BASE "+(string)CHANNEL_BASE);
     }
 
-    // ---------- LINK MESSAGES ----------
-    link_message(integer sender, integer channel, string msg, key id)
+    /* ---------------- LINK_MESSAGE ---------------- */
+    link_message(integer s,integer ch,string msg,key id)
     {
-        // (1) Touch event forwarded from Core via Auth
-        if (channel == CHAN_AUTH && llSubStringIndex(msg, "CORE|TOUCH|") == 0)
+        /* A. touch forwarded */
+        if(ch == CHAN_AUTH && llSubStringIndex(msg,"CORE|TOUCH|") == 0)
         {
-            key av = (key)llGetSubString(msg, 11, -1);
-            llMessageLinked(LINK_THIS, CHAN_AUTH, "QUERY|" + (string)av, NULL_KEY);
-            sessionSet(av, 0, "");           // placeholder until CSV arrives
+            key av=(key)llGetSubString(msg,11,-1);
+            sSet(av,0,"");
+            llMessageLinked(LINK_THIS,CHAN_AUTH,"QUERY|"+(string)av,NULL_KEY);
+            debug("touch from "+(string)av+" -> ACL query");
             return;
         }
 
-        // (2) ACL reply from Auth
-        if (channel == CHAN_AUTH && llSubStringIndex(msg, "ACL|") == 0)
+        /* B. ACL reply */
+        if(ch == CHAN_AUTH && llSubStringIndex(msg,"ACL|") == 0)
         {
-            list p  = llParseString2List(msg, ["|"], []);
-            key av  = (key)llList2String(p, 1);
-            integer level = (integer)llList2String(p, 2);
+            list p=llParseString2List(msg,["|"],[]);
+            key av=(key)llList2String(p,1);
+            integer lvl=(integer)llList2String(p,2);
 
-            llMessageLinked(LINK_THIS, CHAN_CORE,
-                            "REQ_PLUGINS|" + (string)level, NULL_KEY);
+            llMessageLinked(LINK_THIS,CHAN_CORE,"REQ_PLUGINS|"+(string)lvl,NULL_KEY);
+            debug("ACL "+(string)lvl+" for "+(string)av+" -> request plugins");
             return;
         }
 
-        // (3) Plugin list from Core
-        if (channel == CHAN_CORE && llSubStringIndex(msg, "PLUGINS|") == 0)
+        /* C. CSV list from Core */
+        if(ch == CHAN_CORE && llSubStringIndex(msg,"PLUGINS|") == 0)
         {
-            list   p   = llParseString2List(msg, ["|"], []);
-            string csv = llList2String(p, 1);
+            list p   = llParseString2List(msg,["|"],[]);
+            string csv = llList2String(p,1);
+            debug("received PLUGINS csv len="+(string)llStringLength(csv));
 
-            // fill CSV for every waiting session (page == 0 and csv blank)
-            integer n = llGetListLength(gSessions);
-            integer i;
-            for (i = 0; i < n; i += 3)
+            integer i; for(i=0;i<llGetListLength(gSessions);i+=3)
             {
-                string existingCSV = llList2String(gSessions, i + 2);
-                if (existingCSV == "")
+                key av = llList2Key(gSessions,i);
+                integer pg = llList2Integer(gSessions,i+1);
+                string curCSV = llList2String(gSessions,i+2);
+                if(pg==0 && curCSV=="")
                 {
-                    key av = llList2Key(gSessions, i);
-                    sessionSet(av, 0, csv);
-                    showMenu(av, csv, 0);
+                    sSet(av,0,csv);
+
+                    if(csv == "")
+                    {
+                        queueDialog(av,["OK"],"No plug-ins for your access");
+                        debug("empty notice queued for "+(string)av);
+                    }
+                    else
+                    {
+                        list b = buildButtons(csv,0);
+                        integer pages=(llGetListLength(llParseString2List(csv,[","],[]))+PAGE_SIZE-1)/PAGE_SIZE;
+                        queueDialog(av,b,"Collar Menu (1/"+(string)pages+")");
+                        debug("menu queued for "+(string)av);
+                    }
                 }
             }
             return;
         }
 
-        // (4) Plugins can also listen to CHAN_MENU for selections
+        /* D. nav / selection */
+        if(ch == CHAN_MENU)
+        {
+            list p=llParseString2List(msg,["|"],[]);
+            if(llGetListLength(p)<4) return;
+            if(llList2String(p,0)!="MENU") return;
+            if(llList2String(p,1)!="SELECT") return;
+
+            key av=(key)llList2String(p,3);
+            string sel = llList2String(p,2);
+            string csv = sCSV(av);
+            if(csv=="") return;
+
+            integer pg = sPage(av);
+            list plugs = llParseString2List(csv,[","],[]);
+            integer total = llGetListLength(plugs);
+            integer pages = (total+PAGE_SIZE-1)/PAGE_SIZE;
+
+            if(sel == "<< BACK" && pg>0)
+            {
+                pg--; sSet(av,pg,csv);
+                queueDialog(av,buildButtons(csv,pg),"Collar Menu ("+(string)(pg+1)+"/"+(string)pages+")"); return;
+            }
+            if(sel == "NEXT >>" && pg<pages-1)
+            {
+                pg++; sSet(av,pg,csv);
+                queueDialog(av,buildButtons(csv,pg),"Collar Menu ("+(string)(pg+1)+"/"+(string)pages+")"); return;
+            }
+            if(sel == "CANCEL" || sel == "<======>")
+            { sClear(av); return; }
+
+            /* map short → full */
+            integer base=pg*PAGE_SIZE; integer idx;
+            for(idx=0; idx<PAGE_SIZE && base+idx<total; ++idx)
+            {
+                string full=llList2String(plugs,base+idx);
+                string short=full; if(llStringLength(short)>12) short=llGetSubString(short,0,11);
+                if(sel==short)
+                {
+                    llMessageLinked(LINK_THIS,CHAN_MENU,"MENU|SELECT|"+full+"|"+(string)av,NULL_KEY);
+                    sClear(av); return;
+                }
+            }
+        }
     }
 
-    // ---------- DIALOG RESPONSES ----------
-    listen(integer chan, string name, key av, string msg)
+    /* ---------------- TIMER (debounce) ---------------- */
+    timer()
     {
-        if (chan != DIALOG_CHAN) return;
+        if(llGetListLength(gDlgQ)==0)
+        { llSetTimerEvent(0.0); timerRunning=FALSE; return; }
 
-        integer idx = sessionIndex(av);
-        if (idx == -1) return;
+        key av=(key)llList2String(gDlgQ,0);
+        list btn = llParseString2List(llList2String(gDlgQ,1),["|"],[]);
+        string ttl=llList2String(gDlgQ,2);
+        gDlgQ = llDeleteSubList(gDlgQ,0,2);
 
-        integer page = llList2Integer(gSessions, idx + 1);
-        string  csv  = llList2String( gSessions, idx + 2);
+        debug("llDialog → "+(string)av);
+        llDialog(av,ttl,btn,DIALOG_CHAN);
 
-        list pluginNames;
-        integer total;
-        if (csv != "")
-        {
-            pluginNames = llParseString2List(csv, [","], []);
-            total = llGetListLength(pluginNames);
-        }
-        else
-        {
-            pluginNames = [];
-            total = 0;
-        }
-
-        integer pagesCount = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-
-        // --- navigation buttons ---
-        if (msg == "<< BACK")
-        {
-            if (page > 0)
-            {
-                page--;
-                sessionSet(av, page, csv);
-                showMenu(av, csv, page);
-            }
-            return;
-        }
-        if (msg == "NEXT >>")
-        {
-            if (page < pagesCount - 1)
-            {
-                page++;
-                sessionSet(av, page, csv);
-                showMenu(av, csv, page);
-            }
-            return;
-        }
-        if (msg == "CANCEL" || msg == "<======>")
-        {
-            gSessions = llDeleteSubList(gSessions, idx, idx + 2);
-            return;
-        }
-
-        // --- plugin selection ---
-        integer first = page * PAGE_SIZE;
-        integer lastIndex = first + PAGE_SIZE - 1;
-        if (lastIndex >= total) lastIndex = total - 1;
-
-        integer j;
-        for (j = first; j <= lastIndex; ++j)
-        {
-            string fullName = llList2String(pluginNames, j);
-            string shortName = fullName;
-            if (llStringLength(fullName) > 12)
-                shortName = llGetSubString(fullName, 0, 11);
-
-            if (msg == shortName)
-            {
-                llMessageLinked(LINK_SET, CHAN_MENU,
-                                "MENU|SELECT|" + fullName + "|" + (string)av, NULL_KEY);
-                gSessions = llDeleteSubList(gSessions, idx, idx + 2);
-                return;
-            }
-        }
+        if(llGetListLength(gDlgQ)==0)
+        { llSetTimerEvent(0.0); timerRunning=FALSE; }
     }
 }
