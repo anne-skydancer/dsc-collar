@@ -1,0 +1,480 @@
+// =============================================================
+//  plg_access  –  ACL-management plugin for Dynamic RP Collar
+//  Version: 26 Jun 2025  (quirk-compliant)
+// =============================================================
+
+// ---------- Friendly menu name (≤12 chars) ----------
+string FRIENDLY = "Access";
+
+// ---------- ACL levels ----------
+integer ACL_WEARER  = 2;
+integer ACL_TRUSTEE = 3;
+integer ACL_OWNER   = 4;
+
+// ---------- Transaction stage constants ----------
+integer ST_IDLE                = 0;
+integer ST_SCAN_ADD_OWNER      = 1;
+integer ST_WEARER_CONF_OWNER   = 2;
+integer ST_CAND_CONF_OWNER     = 3;
+integer ST_SCAN_ADD_TRU        = 4;
+integer ST_ACT_CONF_TRU        = 5;
+integer ST_CAND_CONF_TRU       = 6;
+integer ST_OWNER_CONF_RELEASE  = 7;
+integer ST_WEARER_CONF_RELEASE = 8;
+integer ST_PICK_REV_TRU        = 9;
+integer ST_ACT_CONF_REV_TRU    = 10;
+integer ST_WEARER_CONF_REV_TRU = 11;
+integer ST_PICK_BLACK          = 12;
+integer ST_CONF_BLACK          = 13;
+integer ST_PICK_UNBLACK        = 14;
+integer ST_CONF_UNBLACK        = 15;
+integer ST_CONF_RUNAWAY        = 16;
+
+// ---------- Collar-wide cached state ----------
+key  gOwner = NULL_KEY;
+list gTrustees = [];
+list gBlacklist = [];
+
+// ---------- Pending operations  [avatar, stage, param] ----------
+list gPending;
+
+// ---------- Channel map ----------
+integer CHANNEL_BASE;
+integer CHAN_CORE;
+integer CHAN_AUTH;
+integer CHAN_MENU;
+integer CHAN_STATUS;
+integer DIALOG_CHAN;
+
+// ---------- Utility helpers ----------
+integer calcBase()
+{
+    integer tail = (integer)("0x" + llGetSubString((string)llGetKey(), -6, -1));
+    return -4000 - (tail & 0x0FFF);
+}
+
+integer pIdx(key av) { return llListFindList(gPending, [av]); }
+
+integer pSet(key av, integer st, string prm)
+{
+    integer i = pIdx(av);
+    if (~i) gPending = llDeleteSubList(gPending, i, i + 2);
+    gPending += [av, st, prm];
+    return 0;
+}
+
+integer pStage(key av)
+{
+    integer i = pIdx(av);
+    if (~i) return llList2Integer(gPending, i + 1);
+    return ST_IDLE;
+}
+
+string pParam(key av)
+{
+    integer i = pIdx(av);
+    if (~i) return llList2String(gPending, i + 2);
+    return "";
+}
+
+integer pClear(key av)
+{
+    integer i = pIdx(av);
+    if (~i) gPending = llDeleteSubList(gPending, i, i + 2);
+    return 0;
+}
+
+integer softReboot()
+{
+    llMessageLinked(LINK_THIS, CHAN_CORE, "SOFTREBOOT", NULL_KEY);
+    return 0;
+}
+
+integer purgeLogs(key who)
+{
+    llMessageLinked(LINK_SET, CHAN_MENU, "CLEARLOGS|" + (string)who, NULL_KEY);
+    return 0;
+}
+
+integer askSnapshot()
+{
+    llMessageLinked(LINK_THIS, CHAN_STATUS, "STATUS|QUERY", NULL_KEY);
+    return 0;
+}
+
+list makePick(list keys)
+{
+    list out;
+    integer i;
+    for (i = 0; i < llGetListLength(keys); ++i)
+    {
+        key k = llList2Key(keys, i);
+        out += llGetSubString((string)k, 0, 11);
+        out += (string)k;
+    }
+    return out;
+}
+
+integer showMenu(key av, integer acl)
+{
+    list buttons;
+    integer haveOwner = (gOwner != NULL_KEY);
+
+    if (!haveOwner && acl == ACL_WEARER)             buttons += "AddOwner";
+    if (haveOwner  && acl == ACL_OWNER)              buttons += "ReleaseSub";
+
+    integer wearerNoOwner = (!haveOwner && acl == ACL_WEARER);
+    integer ownerCtrl     = (acl == ACL_OWNER);
+
+    if (wearerNoOwner || ownerCtrl)
+    {
+        buttons += "AddTrust";
+        if (llGetListLength(gTrustees) > 0) buttons += "RevokeTru";
+    }
+
+    if (acl >= ACL_TRUSTEE)
+    {
+        buttons += "Blacklist";
+        if (llGetListLength(gBlacklist) > 0) buttons += "Unblacklst";
+    }
+
+    if (haveOwner && acl == ACL_WEARER)              buttons += "Runaway";
+
+    buttons += "BACK";
+    while (llGetListLength(buttons) % 3 != 0) buttons += " ";
+
+    llDialog(av, "Access Menu", buttons, DIALOG_CHAN);
+    return 0;
+}
+
+integer beginScan(key requester, integer nextStage)
+{
+    pSet(requester, nextStage, "");
+    llSensor("", NULL_KEY, AGENT, 10.0, TWO_PI);
+    return 0;
+}
+
+// =============================================================
+//                            MAIN
+// =============================================================
+default
+{
+    // ---------- init ----------
+    state_entry()
+    {
+        llSetRemoteScriptAccessPin(0);
+
+        CHANNEL_BASE = calcBase();
+        CHAN_CORE    = CHANNEL_BASE - 0;
+        CHAN_AUTH    = CHANNEL_BASE - 1;
+        CHAN_MENU    = CHANNEL_BASE - 3;
+        CHAN_STATUS  = CHANNEL_BASE - 4;
+        DIALOG_CHAN  = CHANNEL_BASE - 500 - llGetLinkNumber();
+
+        llListen(DIALOG_CHAN, "", NULL_KEY, "");
+
+        llMessageLinked(LINK_THIS, CHAN_CORE,
+                        "REGISTER|" + FRIENDLY + "|1|4", NULL_KEY);
+
+        askSnapshot();
+    }
+
+    // ---------- sensor events ----------
+    no_sensor()
+    {
+        integer i;
+        for (i = 0; i < llGetListLength(gPending); i += 3)
+        {
+            integer st = llList2Integer(gPending, i + 1);
+            if (st == ST_SCAN_ADD_OWNER || st == ST_SCAN_ADD_TRU ||
+                st == ST_PICK_REV_TRU   || st == ST_PICK_BLACK   ||
+                st == ST_PICK_UNBLACK)
+            {
+                key caller = llList2Key(gPending, i);
+                llDialog(caller, "No avatars found.", ["OK"], DIALOG_CHAN);
+                pClear(caller);
+            }
+        }
+    }
+
+    sensor(integer n)
+    {
+        // identify caller waiting for scan
+        key caller;
+        integer st;
+        integer i;
+        for (i = 0; i < llGetListLength(gPending); i += 3)
+        {
+            st = llList2Integer(gPending, i + 1);
+            if (st == ST_SCAN_ADD_OWNER || st == ST_SCAN_ADD_TRU ||
+                st == ST_PICK_REV_TRU   || st == ST_PICK_BLACK   ||
+                st == ST_PICK_UNBLACK)
+            {
+                caller = llList2Key(gPending, i);
+                jump haveCaller;                 // ★ exit loop
+            }
+        }
+@haveCaller;                                     // ★ landing label
+        if (caller == NULL_KEY) return;
+
+        list candidates;
+        integer j;
+        for (j = 0; j < n; ++j)
+        {
+            key k = llDetectedKey(j);
+            if (k == caller) jump nextK;
+            if (st == ST_SCAN_ADD_OWNER && k == gOwner) jump nextK;
+            if (st == ST_SCAN_ADD_TRU &&
+                (k == gOwner || llListFindList(gTrustees, [k]) != -1)) jump nextK;
+            if (st == ST_PICK_BLACK &&
+                llListFindList(gBlacklist, [k]) != -1) jump nextK;
+            candidates += k;
+            @nextK;
+        }
+
+        if (st == ST_PICK_REV_TRU)   candidates = gTrustees;
+        if (st == ST_PICK_UNBLACK)   candidates = gBlacklist;
+
+        if (llGetListLength(candidates) == 0)
+        {
+            llDialog(caller, "No avatars to choose.", ["OK"], DIALOG_CHAN);
+            pClear(caller);
+            return;
+        }
+
+        list pick = makePick(candidates);
+
+        // build label-only list
+        list labels;
+        integer m;
+        for (m = 0; m < llGetListLength(pick); m += 2)
+            labels += llList2String(pick, m);
+        labels += "CANCEL";
+
+        llDialog(caller, "Choose avatar", labels, DIALOG_CHAN);
+        pSet(caller, st, llDumpList2String(pick, ",")); // store CSV
+    }
+
+    // ---------- link messages ----------
+    link_message(integer s, integer ch, string msg, key id)
+    {
+        // snapshot from Status
+        if (ch == CHAN_STATUS && llSubStringIndex(msg, "STATUS|DATA|") == 0)
+        {
+            list p = llParseString2List(msg, ["|"], []);
+            gOwner = (key)llList2String(p, 2);
+
+            string tCSV = llList2String(p, 3);
+            string bCSV = llList2String(p, 4);
+
+            if (tCSV != "")
+                gTrustees = llParseString2List(tCSV, [","], []);
+            else
+                gTrustees = [];
+
+            if (bCSV != "")
+                gBlacklist = llParseString2List(bCSV, [","], []);
+            else
+                gBlacklist = [];
+
+            return;
+        }
+
+        // menu selection
+        if (ch == CHAN_MENU)
+        {
+            list p = llParseString2List(msg, ["|"], []);
+            if (llGetListLength(p) < 4) return;
+            if (llList2String(p, 0) != "MENU") return;
+            if (llList2String(p, 2) != FRIENDLY) return;
+
+            key caller = (key)llList2String(p, 3);
+            llMessageLinked(LINK_THIS, CHAN_AUTH, "QUERY|" + (string)caller, NULL_KEY);
+            return;
+        }
+
+        // ACL reply
+        if (ch == CHAN_AUTH && llSubStringIndex(msg, "ACL|") == 0)
+        {
+            list q = llParseString2List(msg, ["|"], []);
+            key av = (key)llList2String(q, 1);
+            integer lvl = (integer)llList2String(q, 2);
+            showMenu(av, lvl);
+            return;
+        }
+    }
+
+    // ---------- dialog handling ----------
+    listen(integer chan, string nm, key av, string btn)
+    {
+        if (chan != DIALOG_CHAN) return;
+
+        integer st = pStage(av);
+
+        // generic cancel/back
+        if (btn == "CANCEL" || btn == "DECLINE" || btn == "BACK")
+        {
+            if (btn == "BACK")
+                llMessageLinked(LINK_THIS, CHAN_AUTH, "CORE|TOUCH|" + (string)av, NULL_KEY);
+            pClear(av);
+            return;
+        }
+
+        // ---------- root menu buttons ----------
+        if (btn == "AddOwner")   { beginScan(av, ST_SCAN_ADD_OWNER); return; }
+        if (btn == "AddTrust")   { beginScan(av, ST_SCAN_ADD_TRU);   return; }
+        if (btn == "RevokeTru")  { beginScan(av, ST_PICK_REV_TRU);   return; }
+        if (btn == "Blacklist")  { beginScan(av, ST_PICK_BLACK);     return; }
+        if (btn == "Unblacklst") { beginScan(av, ST_PICK_UNBLACK);   return; }
+
+        if (btn == "ReleaseSub")
+        {
+            if (av == gOwner)
+            {
+                pSet(av, ST_OWNER_CONF_RELEASE, (string)gOwner);
+                llDialog(av, "Release wearer?", ["YES", "CANCEL"], DIALOG_CHAN);
+            }
+            return;
+        }
+
+        if (btn == "Runaway")
+        {
+            pSet(av, ST_CONF_RUNAWAY, (string)gOwner);
+            llDialog(av, "Force-remove owner?", ["YES", "CANCEL"], DIALOG_CHAN);
+            return;
+        }
+
+        // ---------- handle avatar choice ----------
+        if (st == ST_SCAN_ADD_OWNER || st == ST_SCAN_ADD_TRU ||
+            st == ST_PICK_REV_TRU   || st == ST_PICK_BLACK   ||
+            st == ST_PICK_UNBLACK)
+        {
+            list pick = llParseString2List(pParam(av), [","], []);
+           integer k;
+            key chosen = NULL_KEY;
+            for (k = 0; k < llGetListLength(pick); k += 2)
+            {
+                if (btn == llList2String(pick, k))
+                {
+                    chosen = (key)llList2String(pick, k + 1);
+                    jump foundChoice;       // ← leave the loop
+                }
+            }
+@foundChoice;                               // ← landing label
+            if (chosen == NULL_KEY) { pClear(av); return; }
+
+            if (st == ST_SCAN_ADD_OWNER)
+            {
+                pSet(av, ST_WEARER_CONF_OWNER, (string)chosen);
+                llDialog(av, "Make owner?", ["YES", "CANCEL"], DIALOG_CHAN);
+            }
+            else if (st == ST_SCAN_ADD_TRU)
+            {
+                pSet(av, ST_ACT_CONF_TRU, (string)chosen);
+                llDialog(av, "Add trustee?", ["YES", "CANCEL"], DIALOG_CHAN);
+            }
+            else if (st == ST_PICK_REV_TRU)
+            {
+                pSet(av, ST_ACT_CONF_REV_TRU, (string)chosen);
+                llDialog(av, "Remove trustee?", ["YES", "CANCEL"], DIALOG_CHAN);
+            }
+            else if (st == ST_PICK_BLACK)
+            {
+                pSet(av, ST_CONF_BLACK, (string)chosen);
+                llDialog(av, "Blacklist avatar?", ["YES", "CANCEL"], DIALOG_CHAN);
+            }
+            else if (st == ST_PICK_UNBLACK)
+            {
+                pSet(av, ST_CONF_UNBLACK, (string)chosen);
+                llDialog(av, "Unblacklist avatar?", ["YES", "CANCEL"], DIALOG_CHAN);
+            }
+            return;
+        }
+
+        // ---------- confirm stages ----------
+        if (st == ST_WEARER_CONF_OWNER && btn == "YES")
+        {
+            key cand = (key)pParam(av);
+            pSet(cand, ST_CAND_CONF_OWNER, (string)av);
+            llDialog(cand, "Accept ownership?", ["ACCEPT", "DECLINE"], DIALOG_CHAN);
+            pClear(av);
+            return;
+        }
+        if (st == ST_CAND_CONF_OWNER && btn == "ACCEPT")
+        {
+            llMessageLinked(LINK_THIS, CHAN_AUTH, "ADD|4|" + (string)av, NULL_KEY);
+            softReboot(); pClear(av); return;
+        }
+        pClear(av);
+
+        if (st == ST_ACT_CONF_TRU && btn == "YES")
+        {
+            key cand2 = (key)pParam(av);
+            pSet(cand2, ST_CAND_CONF_TRU, (string)av);
+            llDialog(cand2, "Accept trustee?", ["ACCEPT", "DECLINE"], DIALOG_CHAN);
+            pClear(av);
+            return;
+        }
+        if (st == ST_CAND_CONF_TRU && btn == "ACCEPT")
+        {
+            llMessageLinked(LINK_THIS, CHAN_AUTH, "ADD|3|" + (string)av, NULL_KEY);
+            softReboot(); pClear(av); return;
+        }
+        pClear(av);
+
+        if (st == ST_OWNER_CONF_RELEASE && btn == "YES")
+        {
+            key wearerID = llGetOwner();
+            pSet(wearerID, ST_WEARER_CONF_RELEASE, (string)gOwner);
+            llDialog(wearerID, "Owner wants to release you.", ["YES", "DECLINE"], DIALOG_CHAN);
+            pClear(av);
+            return;
+        }
+        if (st == ST_WEARER_CONF_RELEASE && btn == "YES")
+        {
+            key delOwner = (key)pParam(av);
+            llMessageLinked(LINK_THIS, CHAN_AUTH, "DEL|" + (string)delOwner, NULL_KEY);
+            purgeLogs(delOwner); softReboot(); pClear(av); return;
+        }
+        pClear(av);
+
+        if (st == ST_ACT_CONF_REV_TRU && btn == "YES")
+        {
+            key wearer2 = llGetOwner();
+            pSet(wearer2, ST_WEARER_CONF_REV_TRU, pParam(av));
+            llDialog(wearer2, "Remove trustee?", ["YES", "DECLINE"], DIALOG_CHAN);
+            pClear(av); return;
+        }
+        if (st == ST_WEARER_CONF_REV_TRU && btn == "YES")
+        {
+            key tDel = (key)pParam(av);
+            llMessageLinked(LINK_THIS, CHAN_AUTH, "DEL|" + (string)tDel, NULL_KEY);
+            purgeLogs(tDel); softReboot(); pClear(av); return;
+        }
+        pClear(av);
+
+        if (st == ST_CONF_BLACK && btn == "YES")
+        {
+            key blk = (key)pParam(av);
+            llMessageLinked(LINK_THIS, CHAN_AUTH, "ADD|-1|" + (string)blk, NULL_KEY);
+            softReboot(); pClear(av); return;
+        }
+        if (st == ST_CONF_UNBLACK && btn == "YES")
+        {
+            key ub = (key)pParam(av);
+            llMessageLinked(LINK_THIS, CHAN_AUTH, "DEL|" + (string)ub, NULL_KEY);
+            softReboot(); pClear(av); return;
+        }
+        pClear(av);
+
+        if (st == ST_CONF_RUNAWAY && btn == "YES")
+        {
+            key own = gOwner;
+            llMessageLinked(LINK_THIS, CHAN_AUTH, "DEL|" + (string)own, NULL_KEY);
+            purgeLogs(own); softReboot(); pClear(av); return;
+        }
+
+        // any other path ends here
+        pClear(av);
+    }
+}
