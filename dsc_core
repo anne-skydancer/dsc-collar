@@ -1,209 +1,122 @@
-// === dsc_core.lsl ===
-// Core script for DS Collar (DSC)
+// =============================================================
+//  Dynamic RP Collar – dsc_core  (2025-06-25)
+// =============================================================
 
-integer LM_AUTH_CHECK          = -3000;
-integer LM_AUTH_RESULT         = -3001;
-integer LM_AUTH_WEARER_UPDATE  = -3002;
-
-integer LM_PLUGIN_REG_REQUEST  = -7000;
-integer LM_PLUGIN_REG_RESPONSE = -7001;
-
-integer LM_SETTING_REQUEST     = -5000;
-integer LM_SETTING_RESPONSE    = -5001;
-
-integer LM_MENU_REQUEST        = -4000;
-integer LM_MENU_RESPONSE       = -4001;
-
-integer DIALOG_CHANNEL         = -8000;
-
-integer ACL_NO_ACCESS          = -1;
-integer ACL_BACKEND            = 0;
-integer ACL_PUBLIC             = 1;
-integer ACL_WEARER             = 2;
-integer ACL_ADMIN              = 3;
-integer ACL_ROOT               = 4;
-
-integer STATE_IDLE             = 0;
-integer STATE_MENU             = 1;
-
-key     g_wearer              = NULL_KEY;
-key     g_currentUser          = NULL_KEY;
-integer g_authLevel            = ACL_NO_ACCESS;
-integer g_state                = STATE_IDLE;
-
-list    g_registered_plugins   = [];
-list    g_registered_labels    = [];
-list    g_registered_acls      = [];
-list    g_registered_types     = [];
-list    g_registered_parents   = [];
-
-integer g_menu_page            = 0;
-
-integer g_registration_expected = 3;  // Adjust as needed
-integer g_registration_count = 0;
-integer g_registration_timeout_handle = -1;
-
-integer REGISTRATION_TIMEOUT_SECONDS = 5;
-
-// Forward declarations
-RegisterWithPlugins()
+// ---------- channel helpers ----------
+integer getChannelBase()
 {
-    llMessageLinked(LINK_SET, LM_PLUGIN_REG_REQUEST, "", NULL_KEY);
-    g_registration_count = 0;
-    g_registered_plugins = [];
-    g_registered_labels = [];
-    g_registered_acls = [];
-    g_registered_types = [];
-    g_registered_parents = [];
+    integer tail = (integer)("0x" + llGetSubString((string)llGetKey(), -6, -1));
+    return -4000 - (tail & 0x0FFF);          // private negative space
+}
 
-    if (g_registration_timeout_handle != -1)
+// ---------- constants ----------
+integer CHANNEL_BASE;
+integer CHAN_CORE;
+integer CHAN_AUTH;
+integer CHAN_SETTINGS;
+integer CHAN_MENU;
+
+// touch-range thresholds (metres)
+float MAX_TOUCH_REZZED = 3.0;
+float MAX_TOUCH_WORN   = 10.0;
+
+// ---------- plugin registry ----------
+list gPlugins;           // [linkNum, name, minACL, maxACL, …]
+
+integer registerPlugin(integer ln, string name, integer minAcl, integer maxAcl)
+{
+    integer idx = llListFindList(gPlugins, [ln]);
+    if (~idx)
+        gPlugins = llDeleteSubList(gPlugins, idx, idx + 3);
+    gPlugins += [ln, name, minAcl, maxAcl];
+    return 0;
+}
+
+string pluginCSV(integer acl)
+{
+    integer i; integer n = llGetListLength(gPlugins);
+    list out;
+    for (i = 0; i < n; i += 4)
     {
-        llSetTimerEvent(0.0);
-        g_registration_timeout_handle = -1;
+        integer min = llList2Integer(gPlugins, i + 2);
+        integer max = llList2Integer(gPlugins, i + 3);
+        if ((acl >= min) && (acl <= max))
+            out += llList2String(gPlugins, i + 1);
     }
-
-    llSetTimerEvent(REGISTRATION_TIMEOUT_SECONDS);
-    g_registration_timeout_handle = 1; // flag
+    return llDumpList2String(out, ",");
 }
 
-UpdateWearer(key wearer)
+integer triggerSoftReboot()
 {
-    g_wearer = wearer;
-    llMessageLinked(LINK_SET, LM_AUTH_WEARER_UPDATE, "", wearer);
+    llMessageLinked(LINK_SET, CHAN_CORE, "CORE|RELOAD", NULL_KEY);
+    llSleep(0.2);            // allow scripts time to persist
+    llResetScript();
+    return 0;
 }
 
-ShowMenu()
-{
-    if (g_currentUser == NULL_KEY) return;
-    llMessageLinked(LINK_SET, LM_MENU_REQUEST, "", g_currentUser);
-}
-
-SendACLCheck(key user)
-{
-    if (user == NULL_KEY) return;
-    llMessageLinked(LINK_SET, LM_AUTH_CHECK, "", user);
-}
-
+// -------------------------------------------------------------
 default
 {
     state_entry()
     {
-        llOwnerSay("[CORE] Initializing collar core.");
-        g_state = STATE_IDLE;
-        g_menu_page = 0;
+        llSetRemoteScriptAccessPin(0);        // security
 
-        integer collarWorn = llGetAttached();
-        if (collarWorn != 0)
-            g_wearer = llGetOwner();
-        else
-            g_wearer = NULL_KEY;
+        CHANNEL_BASE  = getChannelBase();
+        CHAN_CORE     = CHANNEL_BASE - 0;
+        CHAN_AUTH     = CHANNEL_BASE - 1;
+        CHAN_SETTINGS = CHANNEL_BASE - 2;
+        CHAN_MENU     = CHANNEL_BASE - 3;
 
-        g_currentUser = g_wearer;
-
-        RegisterWithPlugins();
-
-        UpdateWearer(g_wearer);
+        llOwnerSay("Core ready (" + (string)CHANNEL_BASE + ").");
+        llMessageLinked(LINK_THIS, CHAN_AUTH, "CORE_READY", NULL_KEY);
     }
 
-    timer()
+    touch_start(integer total)
     {
-        if (g_registration_timeout_handle != -1)
-        {
-            llSetTimerEvent(0);
-            g_registration_timeout_handle = -1;
-            llOwnerSay("[CORE] Plugin registration completed. Total plugins registered: " + (string)llGetListLength(g_registered_plugins));
-        }
+        key   av   = llDetectedKey(0);
+        float dist = llVecDist(llDetectedPos(0), llGetPos());
+        integer attached = llGetAttached();
+        float limit;
+        if (attached)
+            limit = MAX_TOUCH_WORN;
+        else
+            limit = MAX_TOUCH_REZZED;
+
+        if (dist <= limit)
+            llMessageLinked(LINK_THIS, CHAN_AUTH,
+                            "CORE|TOUCH|" + (string)av, NULL_KEY);
+    }
+
+    changed(integer c)
+    {
+        if (c & (CHANGED_INVENTORY | CHANGED_ALLOWED_DROP))
+            triggerSoftReboot();
     }
 
     link_message(integer sender, integer num, string msg, key id)
     {
-        if (num == LM_PLUGIN_REG_RESPONSE)
+        if (num != CHAN_CORE) return;
+
+        list   parts = llParseString2List(msg, ["|"], []);
+        string cmd   = llList2String(parts, 0);
+
+        if (cmd == "REGISTER")
         {
-            if (msg != "")
-            {
-                list parts = llParseString2List(msg, ["|"], []);
-                integer count = llGetListLength(parts);
-                integer i;
-
-                for (i = 0; i + 3 < count; i += 4)
-                {
-                    string label = llList2String(parts, i);
-                    string plugin = llList2String(parts, i + 1);
-                    integer acl = (integer)llList2String(parts, i + 2);
-                    string type = llList2String(parts, i + 3);
-
-                    if (llListFindList(g_registered_plugins, [plugin]) == -1)
-                    {
-                        g_registered_labels += [label];
-                        g_registered_plugins += [plugin];
-                        g_registered_acls += [acl];
-                        g_registered_types += [type];
-                        g_registered_parents += [""];
-                        g_registration_count++;
-                    }
-                }
-                llOwnerSay("[CORE] Received plugin registrations, total so far: " + (string)g_registration_count);
-
-                if (g_registration_count >= g_registration_expected && g_registration_timeout_handle != -1)
-                {
-                    llSetTimerEvent(0);
-                    g_registration_timeout_handle = -1;
-                    llOwnerSay("[CORE] Registration complete early, total plugins: " + (string)g_registration_count);
-                }
-            }
+            registerPlugin(sender,
+                           llList2String(parts, 1),
+                           (integer)llList2String(parts, 2),
+                           (integer)llList2String(parts, 3));
+            llMessageLinked(sender, CHAN_CORE, "ACK|REGISTER", NULL_KEY);
         }
-        else if (num == LM_AUTH_RESULT)
+        else if (cmd == "REQ_PLUGINS")
         {
-            integer newLevel = (integer)msg;
-            g_authLevel = newLevel;
-            llOwnerSay("[CORE] ACL level " + (string)newLevel + " for user " + (string)g_currentUser);
-
-            ShowMenu();
+            integer acl = (integer)llList2String(parts, 1);
+            llMessageLinked(sender, CHAN_CORE,
+                            "PLUGINS|" + pluginCSV(acl), NULL_KEY);
         }
-        else if (num == LM_MENU_RESPONSE)
+        else if (cmd == "SOFTREBOOT")
         {
-            // Forward menu response only to plugin whose label matches msg
-            integer index = llListFindList(g_registered_labels, [msg]);
-            if (index != -1)
-            {
-                string plugin = llList2String(g_registered_plugins, index);
-                llMessageLinked(LINK_SET, LM_MENU_RESPONSE, msg, id);
-                llOwnerSay("[CORE] Forwarded menu response '" + msg + "' to plugin " + plugin);
-            }
-            else
-            {
-                llOwnerSay("[CORE] No plugin matches menu response '" + msg + "'");
-            }
+            triggerSoftReboot();
         }
-        else
-        {
-            llOwnerSay("[CORE] Unhandled link_message: num=" + (string)num + " msg=" + msg);
-        }
-    }
-
-    touch_start(integer total_number)
-    {
-        key interacting_avatar;
-        integer collarWorn = llGetAttached();
-
-        if (collarWorn != 0)
-        {
-            interacting_avatar = llGetOwner();
-        }
-        else
-        {
-            interacting_avatar = llDetectedKey(0);
-        }
-
-        g_currentUser = interacting_avatar;
-
-        llOwnerSay("[CORE] touch_start fired by " + (string)interacting_avatar);
-
-        if (g_wearer != interacting_avatar)
-        {
-            UpdateWearer(interacting_avatar);
-        }
-
-        SendACLCheck(interacting_avatar);
     }
 }
