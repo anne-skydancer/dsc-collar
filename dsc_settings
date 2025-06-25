@@ -1,59 +1,79 @@
-// === dsc_settings.lsl ===
-// Settings plugin for DS Collar (DSC)
+// =============================================================
+//  Dynamic RP Collar – dsc_settings  (2025-06-25)
+//  Simple key/value memory store
+// =============================================================
 
-integer LM_SETTING_REQUEST     = -5000;
-integer LM_SETTING_RESPONSE    = -5001;
-integer LM_SETTING_SAVE        = -5002;
-integer LM_SETTING_DELETE      = -5003;
+integer getChannelBase()
+{
+    integer tail = (integer)("0x" + llGetSubString((string)llGetKey(), -6, -1));
+    return -4000 - (tail & 0x0FFF);
+}
 
-integer LM_PLUGIN_REG_REQUEST  = -7000;
-integer LM_PLUGIN_REG_RESPONSE = -7001;
+integer CHANNEL_BASE;
+integer CHAN_CORE;
+integer CHAN_AUTH;
+integer CHAN_SETTINGS;
+integer CHAN_MENU;
 
-integer LM_MENU_RESPONSE       = -4001;
+// ---------- storage ----------
+list gKeys;
+list gValues;
 
-key g_owner = NULL_KEY;
+integer kvSet(string k, string v)
+{
+    integer idx = llListFindList(gKeys, [k]);
+    if (~idx)
+        gValues = llListReplaceList(gValues, [v], idx, idx);
+    else
+    {
+        gKeys   += k;
+        gValues += v;
+    }
+    return 0;
+}
 
-list g_settings_keys = [];
-list g_settings_values = [];
+string kvGet(string k)
+{
+    integer idx = llListFindList(gKeys, [k]);
+    if (~idx) return llList2String(gValues, idx);
+    return "";
+}
 
+// -------------------------------------------------------------
 default
 {
     state_entry()
     {
-        llOwnerSay("[SETTINGS] Plugin initialized and listening.");
-        llMessageLinked(LINK_SET, LM_PLUGIN_REG_REQUEST, "", NULL_KEY);
+        llSetRemoteScriptAccessPin(0);
+
+        CHANNEL_BASE  = getChannelBase();
+        CHAN_CORE     = CHANNEL_BASE - 0;
+        CHAN_AUTH     = CHANNEL_BASE - 1;
+        CHAN_SETTINGS = CHANNEL_BASE - 2;
+        CHAN_MENU     = CHANNEL_BASE - 3;
     }
 
-    link_message(integer sender, integer num, string msg, key id)
+    link_message(integer sender, integer channel, string msg, key id)
     {
-        if (num == LM_PLUGIN_REG_REQUEST)
-        {
-            string reg_msg = "Settings|dsc_settings|0|Backend";
-            llMessageLinked(LINK_SET, LM_PLUGIN_REG_RESPONSE, reg_msg, NULL_KEY);
-            return;
-        }
+        if (channel != CHAN_SETTINGS) return;
 
-        if (num == LM_MENU_RESPONSE)
-        {
-            // Ignore menu responses here
-            return;
-        }
+        list p = llParseString2List(msg, ["|"], []);
+        string op = llList2String(p, 0);
 
-        if (num == LM_SETTING_SAVE)
+        if (op == "SET")
         {
-            // Save setting logic here (not shown)
+            string k = llList2String(p, 1);
+            string v = llList2String(p, 2);
+            kvSet(k, v);
         }
-        else if (num == LM_SETTING_REQUEST)
+        else if (op == "GET")
         {
-            // Setting request logic here (not shown)
-        }
-        else if (num == LM_SETTING_DELETE)
-        {
-            // Delete setting logic here (not shown)
-        }
-        else
-        {
-            llOwnerSay("[SETTINGS] Unhandled link_message: num=" + (string)num + " msg=" + msg);
+            string k          = llList2String(p, 1);
+            string cfgValue   = kvGet(k);
+            llMessageLinked(sender, CHAN_SETTINGS,
+                            "VAL|" + k + "|" + cfgValue, NULL_KEY);
         }
     }
+
+    // This script ignores CORE|RELOAD to ensure it survives resets.
 }
