@@ -1,6 +1,6 @@
 // =============================================================
-//  Collar Grand Unified Hub (Strict LSL, Numbered Menus, Confirmations, Debug, Public Access Toggle, ACL Filtering)
-//  Version: 2025-07-02h+sessionfix
+//  Collar Grand Unified Hub (Strict LSL, Numbered Menus, Confirmations, Debug, Public Access Toggle, ACL Filtering, Unblacklist)
+//  Version: 2025-07-02i
 // =============================================================
 
 integer DEBUG = TRUE;
@@ -19,23 +19,20 @@ integer gPublicAccess = FALSE;
 
 list gSessions; // [av, page, csv, expiry, context, param, stepdata, menucsv]
 
-// ---- Helpers ----
 integer sIdx(key av) { return llListFindList(gSessions, [av]); }
 integer gIdx(list L, key k) { return llListFindList(L, [k]); }
 
 integer sSet(key av, integer page, string csv, float expiry, string context, string param, string stepdata, string menucsv) {
+    if (DEBUG) llOwnerSay("[DEBUG] sSet: av=" + (string)av + " ctx=" + context + " param=" + param + " stepdata=" + stepdata + " menucsv=" + menucsv);
     integer i = sIdx(av);
     if (~i) gSessions = llDeleteSubList(gSessions, i, i+7);
     gSessions += [av, page, csv, expiry, context, param, stepdata, menucsv];
-    if (DEBUG) llOwnerSay("[DEBUG] sSet: av=" + (string)av + " ctx=" + context + " param=" + param + " stepdata=" + stepdata + " menucsv=" + menucsv);
     return 0;
 }
 integer sClear(key av) {
+    if (DEBUG) llOwnerSay("[DEBUG] sClear: av=" + (string)av);
     integer i = sIdx(av);
-    if (~i) {
-        gSessions = llDeleteSubList(gSessions, i, i+7);
-        if (DEBUG) llOwnerSay("[DEBUG] sClear: av=" + (string)av);
-    }
+    if (~i) gSessions = llDeleteSubList(gSessions, i, i+7);
     return 0;
 }
 list sGet(key av) {
@@ -107,21 +104,23 @@ showMainMenu(key av) {
     integer acl = getACL(av);
     list features = [];
     if (acl == 1) {
+        // Owner or unowned wearer: only show "Release Sub" if is owner AND collar is owned.
         if (gOwner != NULL_KEY && av == gOwner) {
-            features = [ "Release Sub", "Add Trustee", "Remove Trustee", "Blacklist", "Public Access", "Apps", "Status" ];
+            features = [ "Release Sub", "Add Trustee", "Remove Trustee", "Blacklist", "Unblacklist", "Public Access", "Apps", "Status" ];
         } else if (gOwner == NULL_KEY && av == llGetOwner()) {
-            features = [ "Add Owner", "Add Trustee", "Remove Trustee", "Blacklist", "Public Access", "Apps", "Status" ];
+            // Unowned wearer: No release, no runaway.
+            features = [ "Add Owner", "Add Trustee", "Remove Trustee", "Blacklist", "Unblacklist", "Public Access", "Apps", "Status" ];
         } else if (av == gOwner) {
-            features = [ "Release Sub", "Add Trustee", "Remove Trustee", "Blacklist", "Public Access", "Apps", "Status" ];
+            features = [ "Release Sub", "Add Trustee", "Remove Trustee", "Blacklist", "Unblacklist", "Public Access", "Apps", "Status" ];
         } else {
-            features = [ "Add Owner", "Add Trustee", "Remove Trustee", "Blacklist", "Public Access", "Apps", "Status" ];
+            features = [ "Add Owner", "Add Trustee", "Remove Trustee", "Blacklist", "Unblacklist", "Public Access", "Apps", "Status" ];
         }
     }
     else if (acl == 2) {
-        features = [ "Remove Trustee", "Blacklist", "Apps", "Status" ];
+        features = [ "Remove Trustee", "Blacklist", "Unblacklist", "Apps", "Status" ];
     }
     else if (acl == 3) {
-        features = [ "Runaway", "Apps", "Status" ];
+        features = [ "Blacklist", "Unblacklist", "Runaway", "Apps", "Status" ];
     }
     else if (acl == 4) {
         features = [ "Apps", "Status" ];
@@ -208,6 +207,23 @@ beginBlacklist(key av) {
     llSensor("", NULL_KEY, AGENT, SCAN_RANGE, TWO_PI);
     sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "blacklist", "", "", "");
 }
+beginUnblacklist(key av) {
+    if (DEBUG) llOwnerSay("[DEBUG] beginUnblacklist: av=" + (string)av);
+    if (llGetListLength(gBlacklist) == 0) {
+        showInfoDialog(av, "No one is blacklisted.");
+        return;
+    }
+    list display = [];
+    integer i;
+    for (i=0; i<llGetListLength(gBlacklist); ++i)
+        display += llKey2Name(llList2Key(gBlacklist,i));
+    string csv = llDumpList2String(gBlacklist, ",");
+    float expiry = llGetUnixTime() + DIALOG_TIMEOUT;
+    sSet(av, 0, csv, expiry, "unblacklist", "", "", csv);
+    string dialogBody = "Select avatar to unblacklist:\n" + numberedMenuText(display);
+    list buttons = buildNumberedButtons(display);
+    llDialog(av, dialogBody, buttons, DIALOG_CHAN);
+}
 
 default
 {
@@ -246,6 +262,7 @@ default
                     cands += k;
                     @skip;
                 }
+                if (DEBUG) llOwnerSay("[DEBUG] sensor candidate dialog to " + (string)av + " ctx: " + ctx + " cands: " + llDumpList2String(cands, ","));
                 if (llGetListLength(cands) == 0) {
                     showInfoDialog(av, "No avatars found within 10 meters.");
                     sClear(av); return;
@@ -260,7 +277,6 @@ default
                 dialogBody += numberedMenuText(labels);
                 list buttons = buildNumberedButtons(labels);
                 string candsCsv = llDumpList2String(cands, ",");
-                if (DEBUG) llOwnerSay("[DEBUG] sensor candidate dialog to " + (string)av + " ctx: " + ctx + " cands: " + candsCsv);
                 sSet(av, 0, candsCsv, llGetUnixTime() + DIALOG_TIMEOUT, ctx, "", "", candsCsv);
                 llDialog(av, dialogBody, buttons, DIALOG_CHAN);
                 return;
@@ -285,7 +301,6 @@ default
     {
         if (chan != DIALOG_CHAN) return;
 
-        // --------------------------- CONTEXT-BASED LOGIC ONLY --------------------------
         list sess = sGet(av);
         integer page = 0;
         string csv = "";
@@ -316,6 +331,7 @@ default
                 if (action == "Add Trustee")      { beginAddTrustee(av); return; }
                 if (action == "Remove Trustee")   { beginRemoveTrustee(av); return; }
                 if (action == "Blacklist")        { beginBlacklist(av); return; }
+                if (action == "Unblacklist")      { beginUnblacklist(av); return; }
                 if (action == "Public Access")    { showPublicAccessDialog(av); return; }
                 if (action == "Apps")             { showApps(av); return; }
                 if (action == "Status")           { showStatus(av); return; }
@@ -328,7 +344,7 @@ default
             return;
         }
 
-        // --- ADD OWNER selection (numbered honorific)
+        // --- ADD OWNER ---
         if (ctx == "add_owner") {
             list keys = llParseString2List(csv, [","], []);
             integer sel = (integer)msg;
@@ -347,13 +363,12 @@ default
             if (sel > 0 && sel <= llGetListLength(honors)) {
                 key picked = (key)param;
                 string honorific = llList2String(honors, sel-1);
+                // Double confirm: wearer then candidate
                 sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "add_owner_confirm_wearer", (string)picked, honorific, "");
                 showUACDialog(av, "Are you sure you wish to assign " + honorific + " " + llKey2Name(picked) + " as your new owner?");
                 return;
             }
-            if (msg == "Cancel") { sClear(av); return; }
         }
-        // --- ADD OWNER double confirm (wearer/candidate)
         if (ctx == "add_owner_confirm_wearer") {
             if (msg == "OK") {
                 key picked = (key)param;
@@ -380,7 +395,7 @@ default
             if (msg == "Cancel") { sClear(av); sClear((key)param); return; }
         }
 
-        // --- RELEASE SUB double confirm (owner then wearer)
+        // --- RELEASE SUB ---
         if (ctx == "release_sub_confirm_owner") {
             if (msg == "OK") {
                 key wearer = llGetOwner();
@@ -404,7 +419,7 @@ default
             if (msg == "Cancel") { sClear(av); sClear((key)param); return; }
         }
 
-        // --- ADD TRUSTEE: pick candidate, prompt honorific, single confirmation
+        // --- ADD TRUSTEE ---
         if (ctx == "add_trustee") {
             list keys = llParseString2List(csv, [","], []);
             integer sel = (integer)msg;
@@ -428,7 +443,6 @@ default
                 // Only clear after candidate responds!
                 return;
             }
-            if (msg == "Cancel") { sClear(av); return; }
         }
         if (ctx == "add_trustee_confirm_candidate") {
             if (msg == "OK") {
@@ -445,7 +459,7 @@ default
             if (msg == "Cancel") { sClear(av); sClear((key)param); return; }
         }
 
-        // --- REMOVE TRUSTEE (single confirm: candidate only)
+        // --- REMOVE TRUSTEE ---
         if (ctx == "remove_trustee") {
             list keys = llParseString2List(csv, [","], []);
             integer sel = (integer)msg;
@@ -474,16 +488,15 @@ default
             if (msg == "Cancel") { sClear(av); sClear((key)param); return; }
         }
 
-        // --- BLACKLIST (single confirm: initiator only)
+        // --- BLACKLIST ---
         if (ctx == "blacklist") {
             list keys = llParseString2List(csv, [","], []);
             integer sel = (integer)msg;
             if (sel > 0 && sel <= llGetListLength(keys)) {
                 key picked = llList2Key(keys, sel-1);
-                if (DEBUG) llOwnerSay("[DEBUG] blacklist picked: " + (string)picked);
                 sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "blacklist_confirm", (string)picked, "", "");
                 showUACDialog(av, "You are about to blacklist " + llKey2Name(picked) + ". Continue?");
-                // Only clear after final confirm
+                // Only clear after confirmation!
                 return;
             }
         }
@@ -492,6 +505,31 @@ default
                 key picked = (key)param;
                 gBlacklist += picked;
                 showInfoDialog(av, "You have blacklisted " + llKey2Name(picked) + ".");
+                sClear(av);
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); return; }
+        }
+
+        // --- UNBLACKLIST ---
+        if (ctx == "unblacklist") {
+            list keys = llParseString2List(csv, [","], []);
+            integer sel = (integer)msg;
+            if (sel > 0 && sel <= llGetListLength(keys)) {
+                key picked = llList2Key(keys, sel-1);
+                sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "unblacklist_confirm", (string)picked, "", "");
+                showUACDialog(av, "Remove " + llKey2Name(picked) + " from blacklist?");
+                return;
+            }
+        }
+        if (ctx == "unblacklist_confirm") {
+            if (msg == "OK") {
+                key picked = (key)param;
+                integer idx = gIdx(gBlacklist, picked);
+                if (idx != -1) {
+                    gBlacklist = llDeleteSubList(gBlacklist, idx, idx);
+                    showInfoDialog(av, llKey2Name(picked) + " has been removed from the blacklist.");
+                }
                 sClear(av);
                 return;
             }
