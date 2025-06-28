@@ -92,7 +92,7 @@ showMainMenu(key av)
     list btns = coreBtns();
     list ctxs = coreCtxs();
 
-    if(acl=1 || gOwner = NULL_KEY){
+    if(acl=1 || gOwner == NULL_KEY){
         if(gLocked){ btns += ["Unlock"]; ctxs += ["unlock"]; }
         else        { btns += ["Lock"];   ctxs += ["lock"];   }
     }
