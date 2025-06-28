@@ -1,0 +1,227 @@
+// =============================================================
+//  Collar Animate Plugin  (Strict LSL)
+//  Version: 2025-07-06  – fixes Relax error, pre-empt perms
+// =============================================================
+
+integer DEBUG = TRUE;
+
+/*──────────────────────────────────────────────────*/
+/*  CONFIG / CONSTANTS                              */
+/*──────────────────────────────────────────────────*/
+integer PAGE_SIZE       = 9;      // 9 dialog buttons
+float   DIALOG_TIMEOUT  = 180.0;
+
+/*──────────────────────────────────────────────────*/
+/*  GLOBAL STATE                                    */
+/*──────────────────────────────────────────────────*/
+list    gAnimNames      = [];     // sorted animation names
+integer gHavePerms      = FALSE;  // got PERMISSION_TRIGGER_ANIMATION
+string  gCurrentAnim    = "";     // animation currently playing
+
+/* Session cache: [av,page,csv,expiry,ctx,param,step,menucsv,chan,listen] */
+list gSessions;
+
+/*──────────────────────────────────────────────────*/
+/*  SESSION HELPERS  (same layout as other plugins) */
+/*──────────────────────────────────────────────────*/
+integer sIdx(key av){ return llListFindList(gSessions,[av]); }
+
+integer sSet(key av,integer page,string csv,float expiry,string ctx,
+             string param,string step,string menucsv,integer chan)
+{
+    integer i=sIdx(av);
+    if(~i){
+        integer old = llList2Integer(gSessions,i+9);
+        if(old!=-1) llListenRemove(old);
+        gSessions = llDeleteSubList(gSessions,i,i+9);
+    }
+    integer lh = llListen(chan,"",av,"");
+    gSessions += [av,page,csv,expiry,ctx,param,step,menucsv,chan,lh];
+    return TRUE;
+}
+integer sClear(key av){
+    integer i=sIdx(av);
+    if(~i){
+        integer old=llList2Integer(gSessions,i+9);
+        if(old!=-1) llListenRemove(old);
+        gSessions = llDeleteSubList(gSessions,i,i+9);
+    }
+    return TRUE;
+}
+list sGet(key av){
+    integer i=sIdx(av);
+    if(~i) return llList2List(gSessions,i,i+9);
+    return [];
+}
+
+/*──────────────────────────────────────────────────*/
+/*  ANIMATION PLAY / STOP                           */
+/*──────────────────────────────────────────────────*/
+playAnim(string anim)
+{
+    if(!gHavePerms)
+    {   /* queue until permissions arrive */
+        llSetObjectDesc(anim);
+        llRequestPermissions(llGetOwner(),PERMISSION_TRIGGER_ANIMATION);
+        return;
+    }
+
+    if(gCurrentAnim != "")
+        llStopAnimation(gCurrentAnim);
+
+    llStartAnimation(anim);
+    gCurrentAnim = anim;
+}
+
+/*──────────────────────────────────────────────────*/
+/*  MENU BUILDING                                   */
+/*──────────────────────────────────────────────────*/
+list slice(list L, integer start, integer count)
+{
+    return llList2List(L,start,start+count-1);
+}
+showAnimMenu(key av, integer page, integer chan)
+{
+    integer total = llGetListLength(gAnimNames);
+    integer pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    /* build list for this page */
+    integer start = page * PAGE_SIZE;
+    list pageAnims = slice(gAnimNames, start, PAGE_SIZE);
+
+    list buttons = pageAnims;
+
+    /* navigation buttons */
+    if(page > 0)             buttons += ["« Prev"];
+    else                     buttons += [" "];
+    buttons += ["Relax"];                      // always present
+    if(page < pages - 1)     buttons += ["Next »"];
+    else                     buttons += [" "];
+
+    while(llGetListLength(buttons) % 3 != 0) buttons += " ";
+
+    /* store context */
+    sSet(av,page,"",llGetUnixTime()+DIALOG_TIMEOUT,
+         "anim_menu","","","",chan);
+
+    string header = "Select an animation (page "+(string)(page+1)+"/"+(string)pages+"):";
+    llDialog(av,header,buttons,chan);
+}
+
+/*──────────────────────────────────────────────────*/
+/*  TIMEOUT                                         */
+/*──────────────────────────────────────────────────*/
+timeoutCheck()
+{
+    integer now = llGetUnixTime();
+    integer i=0;
+    while(i<llGetListLength(gSessions))
+    {
+        float exp = llList2Float(gSessions,i+3);
+        key  av  = llList2Key(gSessions,i);
+        if(now>exp)
+        {
+            llInstantMessage(av,"Menu timed out.");
+            sClear(av);
+        }
+        else i += 10;
+    }
+}
+
+/*──────────────────────────────────────────────────*/
+/*  DEFAULT STATE                                   */
+/*──────────────────────────────────────────────────*/
+default
+{
+    state_entry()
+    {
+        /* gather animations */
+        integer count = llGetInventoryNumber(INVENTORY_ANIMATION);
+        integer i;
+        for(i=0;i<count;i++)
+            gAnimNames += llGetInventoryName(INVENTORY_ANIMATION,i);
+        gAnimNames = llListSort(gAnimNames,1,TRUE);      // alphabetic
+
+        /* pre-empt permission */
+        llRequestPermissions(llGetOwner(),PERMISSION_TRIGGER_ANIMATION);
+
+        /* register with GUH (ACL 4 = anyone not black-listed) */
+        llMessageLinked(LINK_THIS,500,"register|Animate|4|animate",NULL_KEY);
+
+        llSetTimerEvent(1.0);
+        if(DEBUG) llOwnerSay("[Animate] ready, "+(string)count+" anims.");
+    }
+
+    /* permission result */
+    run_time_permissions(integer perms)
+    {
+        if(perms & PERMISSION_TRIGGER_ANIMATION)
+        {
+            gHavePerms = TRUE;
+            string queued = llGetObjectDesc();
+            if(queued != "")
+            {
+                llStartAnimation(queued);
+                gCurrentAnim = queued;
+                llSetObjectDesc("");
+            }
+        }
+    }
+
+    /* GUH opens us */
+    link_message(integer sender,integer num,string str,key id)
+    {
+        if(num==510)
+        {
+            list a = llParseString2List(str,["|"],[]);
+            if(llList2String(a,0)=="animate" && llGetListLength(a)>=3)
+            {
+                key av   = (key)llList2String(a,1);
+                integer chan = (integer)llList2String(a,2);
+                showAnimMenu(av,0,chan);
+            }
+        }
+    }
+
+    listen(integer chan,string nm,key av,string msg)
+    {
+        list s = sGet(av);
+        if(llGetListLength(s)==0) return;
+        integer session_chan = llList2Integer(s,8);
+        if(chan!=session_chan) return;
+
+        integer page  = llList2Integer(s,1);
+
+        /* NAVIGATION */
+        if(msg=="« Prev"){ showAnimMenu(av,page-1,chan); return; }
+        if(msg=="Next »"){ showAnimMenu(av,page+1,chan); return; }
+        if(msg=="Relax")
+        {
+            if(gCurrentAnim != "") llStopAnimation(gCurrentAnim);
+            gCurrentAnim = "";
+            sClear(av);
+            return;
+        }
+
+        /* actual animation buttons */
+        if(llListFindList(gAnimNames,[msg]) != -1)
+        {
+            playAnim(msg);
+            sClear(av);
+            return;
+        }
+    }
+
+    timer(){ timeoutCheck(); }
+
+    /* request perms again if owner changes */
+    changed(integer c)
+    {
+        if(c & CHANGED_OWNER)
+        {
+            gHavePerms = FALSE;
+            gCurrentAnim = "";
+            llRequestPermissions(llGetOwner(),PERMISSION_TRIGGER_ANIMATION);
+        }
+    }
+}
