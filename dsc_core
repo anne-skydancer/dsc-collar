@@ -1,292 +1,619 @@
 // =============================================================
-//  Collar Grand Unified Hub  – strict LSL, plugin-ready
-//  Version: 2025-07-05  lock/unlock + 8-field state-sync  (no ternaries)
+//  Collar Grand Unified Hub (Strict LSL, Concise Button Main Menu, Numbered Av Selection, Confirmations, Debug, Public Access Toggle, ACL Filtering, Unblacklist)
+//  Version: 2025-07-02i+ui2
 // =============================================================
 
 integer DEBUG = TRUE;
+integer DIALOG_CHAN;
 
-/*──────── registries & persistent state ────────*/
-list    gPlugins;                               // [script, label, minACL, ctx]
-list    gSessions;                              // [av,page,csv,exp,ctx,param,step,menucsv,chan,listen]
+float SCAN_RANGE = 10.0;
+integer DIALOG_PAGE_SIZE = 9;
+float DIALOG_TIMEOUT = 180.0;
 
-float   DIALOG_TIMEOUT = 180.0;
-integer gListenHandle = 0;
+key gOwner = NULL_KEY;
+string gOwnerHonorific = "";
+list gTrustees = [];
+list gTrusteeHonorifics = [];
+list gBlacklist = [];
+integer gPublicAccess = FALSE;
 
-key     gOwner              = NULL_KEY;
-string  gOwnerHonorific     = "";
-list    gTrustees           = [];
-list    gTrusteeHonorifics  = [];
-list    gBlacklist          = [];
-integer gPublicAccess       = FALSE;
-integer gLocked             = FALSE;
+list gSessions; // [av, page, csv, expiry, context, param, stepdata, menucsv]
 
-/*──────── small helpers ────────*/
-integer sIdx(key av){ return llListFindList(gSessions,[av]); }
-integer gIdx(list L,key k){ return llListFindList(L,[k]); }
+// ==== Helper Functions ====
+integer sIdx(key av) { return llListFindList(gSessions, [av]); }
+integer gIdx(list L, key k) { return llListFindList(L, [k]); }
 
-integer sessSet(key av,integer page,string csv,float exp,string ctx,
-                string param,string step,string mcsv,integer chan)
-{
+integer sSet(key av, integer page, string csv, float expiry, string context, string param, string stepdata, string menucsv) {
+    if (DEBUG) llOwnerSay("[DEBUG] sSet: av=" + (string)av + " ctx=" + context + " param=" + param + " stepdata=" + stepdata + " menucsv=" + menucsv);
     integer i = sIdx(av);
-    if(~i){
-        integer old = llList2Integer(gSessions,i+9);
-        if(old!=-1) llListenRemove(old);
-        gSessions = llDeleteSubList(gSessions,i,i+9);
-    }
-    integer lh = llListen(chan,"",av,"");
-    gSessions += [av,page,csv,exp,ctx,param,step,mcsv,chan,lh];
-    return TRUE;
+    if (~i) gSessions = llDeleteSubList(gSessions, i, i+7);
+    gSessions += [av, page, csv, expiry, context, param, stepdata, menucsv];
+    return 0;
 }
-integer sessClear(key av){
+integer sClear(key av) {
+    if (DEBUG) llOwnerSay("[DEBUG] sClear: av=" + (string)av);
     integer i = sIdx(av);
-    if(~i){
-        integer old = llList2Integer(gSessions,i+9);
-        if(old!=-1) llListenRemove(old);
-        gSessions = llDeleteSubList(gSessions,i,i+9);
-    }
-    return TRUE;
+    if (~i) gSessions = llDeleteSubList(gSessions, i, i+7);
+    return 0;
 }
-list sessGet(key av){
+list sGet(key av) {
     integer i = sIdx(av);
-    if(~i) return llList2List(gSessions,i,i+9);
+    if (~i) return llList2List(gSessions, i, i+7);
     return [];
 }
 
-integer getACL(key av){
-    if(gIdx(gBlacklist,av)!=-1) return 6;
-    if(av==gOwner)             return 1;
-    if(av==llGetOwner()){
-        if(gOwner==NULL_KEY)   return 1;
-        return 3;
+// ==== Access Control Level Helper ====
+integer getACL(key av) {
+    if (gIdx(gBlacklist, av) != -1) return 6; // Blacklist (LV6)
+    if (av == gOwner) return 1;               // Owner (LV1)
+    if (av == llGetOwner()) {
+        if (gOwner == NULL_KEY) return 1;     // Unowned wearer = LV1
+        else return 3;                        // Owned wearer = LV3
     }
-    if(gIdx(gTrustees,av)!=-1) return 2;
-    if(gPublicAccess)          return 4;
-    return 5;
+    if (gIdx(gTrustees, av) != -1) return 2;  // Trustee (LV2)
+    if (gPublicAccess) return 4;              // Public (LV4)
+    return 5;                                 // No access (LV5)
 }
 
-/*──────── plugin registry helpers ────────*/
-addPlugin(integer sn,string label,integer min_acl,string ctx){
-    integer i;
-    for(i=0;i<llGetListLength(gPlugins);i+=4){
-        if(llList2Integer(gPlugins,i)==sn)
-            gPlugins = llDeleteSubList(gPlugins,i,i+3);
+// ==== Button Helpers ====
+list buildNumberedButtons(list labels) {
+    list buttons = [];
+    integer i = 0;
+    for (i=0; i<llGetListLength(labels); ++i) {
+        buttons += (string)(i+1);
     }
-    gPlugins += [sn,label,min_acl,ctx];
+    while (llGetListLength(buttons) % 3 != 0) buttons += " ";
+    return buttons;
 }
-removePlugin(integer sn){
-    integer i;
-    for(i=0;i<llGetListLength(gPlugins);i+=4){
-        if(llList2Integer(gPlugins,i)==sn)
-            gPlugins = llDeleteSubList(gPlugins,i,i+3);
+string numberedMenuText(list labels) {
+    string text = "";
+    integer i = 0;
+    for (i=0; i<llGetListLength(labels); ++i) {
+        text += (string)(i+1) + ". " + llList2String(labels,i) + "\n";
     }
+    return text;
 }
 
-/*──────── menu builders ────────*/
-list coreBtns(){ return ["Status","Apps"]; }
-list coreCtxs(){ return ["status","apps"]; }
+// ==== Honorific Choices and Dialog Row Helpers ====
+list ownerHonorifics() { return [ "Master", "Mistress", "Daddy", "Mommy", "King", "Queen" ]; }
+list trusteeHonorifics() { return [ "Sir", "Miss", "Mister", "Madam" ]; }
+list makeUACNavRow() { return [ "Cancel", " ", "OK" ]; }
+list makeInfoNavRow() { return [ " ", "OK", " " ]; }
 
-showMainMenu(key av)
-{
+// ==== Simple Dialog Helpers ====
+showUACDialog(key av, string message) {
+    if (DEBUG) llOwnerSay("[DEBUG] showUACDialog to " + (string)av + ": " + message);
+    llDialog(av, message, makeUACNavRow(), DIALOG_CHAN);
+}
+showInfoDialog(key av, string message) {
+    if (DEBUG) llOwnerSay("[DEBUG] showInfoDialog to " + (string)av + ": " + message);
+    llDialog(av, message, makeInfoNavRow(), DIALOG_CHAN);
+}
+
+showPublicAccessDialog(key av) {
+    string txt = "Public access is currently ";
+    list buttons;
+    if (gPublicAccess) {
+        txt += "ENABLED.\nDisable public access?";
+        buttons = [ "Disable", "Cancel" ];
+    } else {
+        txt += "DISABLED.\nEnable public access?";
+        buttons = [ "Enable", "Cancel" ];
+    }
+    while (llGetListLength(buttons) % 3 != 0) buttons += " ";
+    sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "public_toggle_confirm", "", "", "");
+    llDialog(av, txt, buttons, DIALOG_CHAN);
+}
+
+// ==== Main Menu (Concise Button UI) ====
+// The main menu now shows one button per action, mapped to clear/short names.
+showMainMenu(key av) {
     integer acl = getACL(av);
 
-    list btns = coreBtns();
-    list ctxs = coreCtxs();
+    // Button labels: index matches action string in logic below.
+    list actions;
+    list labels;
 
-    if(acl<=3){
-        if(gLocked){ btns += ["Unlock"]; ctxs += ["unlock"]; }
-        else        { btns += ["Lock"];   ctxs += ["lock"];   }
+    if (acl == 1) {
+        if (gOwner != NULL_KEY && av == gOwner) {
+            labels = [ "Release Sub", "Add Trustee", "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Public", "Apps", "Status" ];
+            actions = [ "Release Sub", "Add Trustee", "Remove Trustee", "Blacklist", "Unblacklist", "Public Access", "Apps", "Status" ];
+        } else if (gOwner == NULL_KEY && av == llGetOwner()) {
+            labels = [ "Add Owner", "Add Trustee", "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Public", "Apps", "Status" ];
+            actions = [ "Add Owner", "Add Trustee", "Remove Trustee", "Blacklist", "Unblacklist", "Public Access", "Apps", "Status" ];
+        } else if (av == gOwner) {
+            labels = [ "Release Sub", "Add Trustee", "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Public", "Apps", "Status" ];
+            actions = [ "Release Sub", "Add Trustee", "Remove Trustee", "Blacklist", "Unblacklist", "Public Access", "Apps", "Status" ];
+        } else {
+            labels = [ "Add Owner", "Add Trustee", "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Public", "Apps", "Status" ];
+            actions = [ "Add Owner", "Add Trustee", "Remove Trustee", "Blacklist", "Unblacklist", "Public Access", "Apps", "Status" ];
+        }
+    }
+    else if (acl == 2) {
+        labels = [ "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Apps", "Status" ];
+        actions = [ "Remove Trustee", "Blacklist", "Unblacklist", "Apps", "Status" ];
+    }
+    else if (acl == 3) {
+        labels = [ "Add Blacklist", "Rem Blacklist", "Runaway", "Apps", "Status" ];
+        actions = [ "Blacklist", "Unblacklist", "Runaway", "Apps", "Status" ];
+    }
+    else if (acl == 4) {
+        labels = [ "Apps", "Status" ];
+        actions = [ "Apps", "Status" ];
     }
 
-    integer i;
-    for(i=0;i<llGetListLength(gPlugins);i+=4){
-        integer min_acl = llList2Integer(gPlugins,i+2);
-        if(acl>min_acl) jump skip_p;
-        btns += [llList2String(gPlugins,i+1)];
-        ctxs += [llList2String(gPlugins,i+3)+"|"+
-                 (string)llList2Integer(gPlugins,i)];
-        @skip_p;
-    }
-    while(llGetListLength(btns)%3!=0) btns += " ";
+    if (acl == 5) { showInfoDialog(av, "This collar is not available to the public."); return; }
+    if (acl == 6) { showInfoDialog(av, "You have been blacklisted from this collar."); return; }
 
-    integer chan = (integer)(-1000000.0*llFrand(1.0)-1.0);
-    sessSet(av,0,"",llGetUnixTime()+DIALOG_TIMEOUT,
-            "main","","",llDumpList2String(ctxs,","),chan);
+    if (DEBUG) llOwnerSay("[DEBUG] showMainMenu to " + (string)av + " options: " + llDumpList2String(labels, ","));
+    string dialogBody = "Select an option:";
 
-    if(gListenHandle) llListenRemove(gListenHandle);
-    gListenHandle = llListen(chan,"",av,"");
+    // Pad buttons to fill 3-wide layout
+    list buttons = labels;
+    while (llGetListLength(buttons) % 3 != 0) buttons += " ";
 
-    if(DEBUG) llOwnerSay("[DEBUG] showMainMenu → "+(string)av+
-                         " chan="+(string)chan+" btns="+llDumpList2String(btns,","));
-    llDialog(av,"Select an option:",btns,chan);
+    // Save both button labels and their actions (as CSV)
+    sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "main_menu", "", "", llDumpList2String(actions, ","));
+
+    llDialog(av, dialogBody, buttons, DIALOG_CHAN);
 }
 
-/*──────── dialogs ────────*/
-showStatus(key av,integer chan)
-{
-    string t = "";
-    if(gOwner!=NULL_KEY)
-         t += "Owner: "+gOwnerHonorific+" "+llKey2Name(gOwner)+"\n";
-    else t += "Collar is unowned.\n";
+// Helper to get button labels for current av's ACL (same logic as showMainMenu, kept DRY for listen event)
+list labelsForACL(key av) {
+    integer acl = getACL(av);
+    if (acl == 1) {
+        if (gOwner != NULL_KEY && av == gOwner)
+            return [ "Release Sub", "Add Trustee", "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Public", "Apps", "Status" ];
+        else if (gOwner == NULL_KEY && av == llGetOwner())
+            return [ "Add Owner", "Add Trustee", "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Public", "Apps", "Status" ];
+        else if (av == gOwner)
+            return [ "Release Sub", "Add Trustee", "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Public", "Apps", "Status" ];
+        else
+            return [ "Add Owner", "Add Trustee", "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Public", "Apps", "Status" ];
+    }
+    else if (acl == 2)
+        return [ "Rem Trustee", "Add Blacklist", "Rem Blacklist", "Apps", "Status" ];
+    else if (acl == 3)
+        return [ "Add Blacklist", "Rem Blacklist", "Runaway", "Apps", "Status" ];
+    else if (acl == 4)
+        return [ "Apps", "Status" ];
+    return [];
+}
 
-    if(llGetListLength(gTrustees)>0){
+showStatus(key av) {
+    string txt = "";
+    if (gOwner != NULL_KEY)
+        txt += "Owner: " + gOwnerHonorific + " " + llKey2Name(gOwner) + "\n";
+    else
+        txt += "Collar is unowned.\n";
+    if (llGetListLength(gTrustees) > 0) {
+        txt += "Trustees:\n";
         integer i;
-        t += "Trustees:\n";
-        for(i=0;i<llGetListLength(gTrustees);++i)
-            t += "  "+llList2String(gTrusteeHonorifics,i)+" "+
-                 llKey2Name(llList2Key(gTrustees,i))+"\n";
+        for (i=0; i<llGetListLength(gTrustees); ++i)
+            txt += "  " + llList2String(gTrusteeHonorifics,i) + " " + llKey2Name(llList2Key(gTrustees,i)) + "\n";
     }
-    if(gPublicAccess) t += "Public Access: ENABLED\n";
-    else              t += "Public Access: DISABLED\n";
-    if(gLocked)       t += "Locked: YES\n";
-    else              t += "Locked: NO\n";
+    txt += "Public Access: ";
+    if (gPublicAccess) txt += "ENABLED\n";
+    else txt += "DISABLED\n";
+    showInfoDialog(av, txt);
+}
+showApps(key av) { showInfoDialog(av, "(Stub) Apps list would go here."); }
 
-    llDialog(av,t,[" ","OK"," "],chan);
-}
-showApps(key av,integer chan){
-    llDialog(av,"(Stub) Apps list would go here.",[" ","OK"," "],chan);
-}
-showLockDialog(key av,integer chan){
-    string txt;
-    list buttons;
-    if(gLocked){
-        txt = "The collar is currently LOCKED.\nUnlock the collar?";
-        buttons = ["Unlock","Cancel"];
-    }else{
-        txt = "The collar is currently UNLOCKED.\nLock the collar?";
-        buttons = ["Lock","Cancel"];
-    }
-    while(llGetListLength(buttons)%3!=0) buttons += " ";
-    sessSet(av,0,"",llGetUnixTime()+DIALOG_TIMEOUT,
-            "lock_toggle","","","",chan);
-    llDialog(av,txt,buttons,chan);
-}
-
-/*──────── timeout check ────────*/
-timeoutCheck(){
+timeoutCheck() {
     integer now = llGetUnixTime();
-    integer i=0;
-    while(i<llGetListLength(gSessions)){
-        if(now>llList2Float(gSessions,i+3))
-             sessClear(llList2Key(gSessions,i));
-        else i += 10;
+    integer i = 0;
+    while (i < llGetListLength(gSessions)) {
+        float expiry = llList2Float(gSessions, i+3);
+        key av = llList2Key(gSessions, i);
+        if (now > expiry) {
+            llInstantMessage(av, "Menu timed out. Please try again.");
+            gSessions = llDeleteSubList(gSessions, i, i+7);
+        } else {
+            i += 8;
+        }
     }
 }
 
-/*──────── default state ────────*/
+// ==== Flow Start Helpers (unchanged) ====
+beginAddOwner(key av) {
+    if (DEBUG) llOwnerSay("[DEBUG] beginAddOwner: av=" + (string)av);
+    llSensor("", NULL_KEY, AGENT, SCAN_RANGE, TWO_PI);
+    sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "add_owner", "", "", "");
+}
+beginReleaseSub(key av) {
+    if (DEBUG) llOwnerSay("[DEBUG] beginReleaseSub: av=" + (string)av);
+    showUACDialog(av, "Are you sure you want to release your sub? This will remove your ownership.");
+    sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "release_sub_confirm_owner", "", "", "");
+}
+beginAddTrustee(key av) {
+    if (DEBUG) llOwnerSay("[DEBUG] beginAddTrustee: av=" + (string)av);
+    llSensor("", NULL_KEY, AGENT, SCAN_RANGE, TWO_PI);
+    sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "add_trustee", "", "", "");
+}
+beginRemoveTrustee(key av) {
+    if (DEBUG) llOwnerSay("[DEBUG] beginRemoveTrustee: av=" + (string)av);
+    if (llGetListLength(gTrustees) == 0) {
+        showInfoDialog(av, "There are no trustees to remove.");
+        return;
+    }
+    list display = [];
+    integer i = 0;
+    for (i=0; i<llGetListLength(gTrustees); ++i)
+        display += llKey2Name(llList2Key(gTrustees,i));
+    string csv = llDumpList2String(gTrustees, ",");
+    float expiry = llGetUnixTime() + DIALOG_TIMEOUT;
+    sSet(av, 0, csv, expiry, "remove_trustee", "", "", csv);
+    string dialogBody = "Select trustee to remove:\n" + numberedMenuText(display);
+    list buttons = buildNumberedButtons(display);
+    llDialog(av, dialogBody, buttons, DIALOG_CHAN);
+}
+beginBlacklist(key av) {
+    if (DEBUG) llOwnerSay("[DEBUG] beginBlacklist: av=" + (string)av);
+    llSensor("", NULL_KEY, AGENT, SCAN_RANGE, TWO_PI);
+    sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "blacklist", "", "", "");
+}
+beginUnblacklist(key av) {
+    if (DEBUG) llOwnerSay("[DEBUG] beginUnblacklist: av=" + (string)av);
+    if (llGetListLength(gBlacklist) == 0) {
+        showInfoDialog(av, "No one is blacklisted.");
+        return;
+    }
+    list display = [];
+    integer i;
+    for (i=0; i<llGetListLength(gBlacklist); ++i)
+        display += llKey2Name(llList2Key(gBlacklist,i));
+    string csv = llDumpList2String(gBlacklist, ",");
+    float expiry = llGetUnixTime() + DIALOG_TIMEOUT;
+    sSet(av, 0, csv, expiry, "unblacklist", "", "", csv);
+    string dialogBody = "Select avatar to unblacklist:\n" + numberedMenuText(display);
+    list buttons = buildNumberedButtons(display);
+    llDialog(av, dialogBody, buttons, DIALOG_CHAN);
+}
+
+// ==== Core Events and Menu Flows ====
 default
 {
-    state_entry(){ if(DEBUG) llOwnerSay("[DEBUG] GUH state_entry");
-                   llSetTimerEvent(1.0); }
-
-    touch_start(integer n){ showMainMenu(llDetectedKey(0)); }
-
-    link_message(integer sn,integer num,string str,key id)
+    state_entry()
     {
-        /* plugin register/unregister */
-        if(num==500){
-            list p = llParseStringKeepNulls(str,["|"],[]);
-            if(llGetListLength(p)>=4 && llList2String(p,0)=="register"){
-                addPlugin(sn,llList2String(p,1),
-                             (integer)llList2String(p,2),
-                             llList2String(p,3));
-                if(DEBUG) llOwnerSay("[PLUGIN] Registered "+llList2String(p,1));
-            }
-        }
-        else if(num==501 && str=="unregister"){ removePlugin(sn); }
+        DIALOG_CHAN = (integer)llFrand(-1000000.0);
+        llListen(DIALOG_CHAN, "", NULL_KEY, "");
+        llSetTimerEvent(1.0);
+        if (DEBUG) llOwnerSay("[DEBUG] Ready (dialog chan " + (string)DIALOG_CHAN + ")");
+    }
 
-        /* state-sync from Access (8 fields, NO ternaries) */
-else if (num == 520)
-{
-    list p = llParseString2List(str, ["|"], []);
-    /* state_sync|owner|ownerHon|trust_csv|trustHon_csv|blacklist_csv|pub|lock */
-    if (llGetListLength(p) == 8 && llList2String(p,0) == "state_sync")
+    touch_start(integer t)
     {
-        gOwner           = (key)  llList2String(p,1);
-        gOwnerHonorific  =         llList2String(p,2);
+        key av = llDetectedKey(0);
+        if (DEBUG) llOwnerSay("[DEBUG] touch_start by " + (string)av);
+        showMainMenu(av);
+    }
 
-        string trust_csv =         llList2String(p,3);
-        string trustHon  =         llList2String(p,4);
-        string bl_csv    =         llList2String(p,5);
-        string pub_str   =         llList2String(p,6);
-        string lock_str  =         llList2String(p,7);          // <── NEW
-
-        /* convert comma-lists, using blanks (" ") to mean “empty” */
-        if (trust_csv == " ")   gTrustees          = [];
-        else                    gTrustees          = llParseString2List(trust_csv,[","],[]);
-        if (trustHon  == " ")   gTrusteeHonorifics = [];
-        else                    gTrusteeHonorifics = llParseString2List(trustHon,[","],[]);
-        if (bl_csv    == " ")   gBlacklist         = [];
-        else                    gBlacklist         = llParseString2List(bl_csv,[","],[]);
-
-        if (pub_str  == "1") gPublicAccess = TRUE;  else gPublicAccess = FALSE;
-        if (lock_str == "1") gLocked       = TRUE;  else gLocked       = FALSE;
-
-        if (DEBUG)
+    sensor(integer n)
+    {
+        integer i;
+        for (i=0; i<llGetListLength(gSessions); i+=8)
         {
-            llOwnerSay("[GUH] State sync recv:"
-                + " owner="     + (string)gOwner
-                + " ownerHon="  + gOwnerHonorific
-                + " trust="     + llDumpList2String(gTrustees,",")
-                + " trustHon="  + llDumpList2String(gTrusteeHonorifics,",")
-                + " blacklist=" + llDumpList2String(gBlacklist,",")
-                + " pub="       + pub_str
-                + " lock="      + lock_str);
+            key av = llList2Key(gSessions,i);
+            string ctx = llList2String(gSessions,i+4);
+            if (ctx == "add_owner" || ctx == "add_trustee" || ctx == "blacklist") {
+                list cands = [];
+                integer j;
+                for (j=0; j<n; ++j)
+                {
+                    key k = llDetectedKey(j);
+                    if (k == av) jump skip;
+                    if (ctx == "add_owner" && k == gOwner) jump skip;
+                    if (ctx == "add_trustee" && gIdx(gTrustees, k) != -1) jump skip;
+                    if (ctx == "blacklist" && gIdx(gBlacklist, k) != -1) jump skip;
+                    cands += k;
+                    @skip;
                 }
+                if (DEBUG) llOwnerSay("[DEBUG] sensor candidate dialog to " + (string)av + " ctx: " + ctx + " cands: " + llDumpList2String(cands, ","));
+                if (llGetListLength(cands) == 0) {
+                    showInfoDialog(av, "No avatars found within 10 meters.");
+                    sClear(av); return;
+                }
+                list labels = [];
+                for (j=0; j<llGetListLength(cands); ++j)
+                    labels += llKey2Name(llList2Key(cands,j));
+                string dialogBody = "";
+                if (ctx == "add_owner") dialogBody = "Select your new primary owner:\n";
+                else if (ctx == "add_trustee") dialogBody = "Select a trustee:\n";
+                else if (ctx == "blacklist") dialogBody = "Blacklist an avatar:\n";
+                dialogBody += numberedMenuText(labels);
+                list buttons = buildNumberedButtons(labels);
+                string candsCsv = llDumpList2String(cands, ",");
+                sSet(av, 0, candsCsv, llGetUnixTime() + DIALOG_TIMEOUT, ctx, "", "", candsCsv);
+                llDialog(av, dialogBody, buttons, DIALOG_CHAN);
+                return;
             }
         }
-    }   
+    }
 
-
-    listen(integer chan,string nm,key av,string msg)
+    no_sensor()
     {
-        list s = sessGet(av);
-        if(llGetListLength(s)==0) return;
-        if(chan!=llList2Integer(s,8)) return;
-
-        string ctx = llList2String(s,4);
-        string menucsv = llList2String(s,7);
-
-        if(ctx=="main"){
-            /* decode button pressed */
-            list ctxs = llParseString2List(menucsv,[","],[]);
-            list btns = coreBtns();
-            if(getACL(av)<=3){
-                if(gLocked) btns += ["Unlock"]; else btns += ["Lock"];
+        integer i;
+        for (i=0; i<llGetListLength(gSessions); i+=8) {
+            key av = llList2Key(gSessions, i);
+            string ctx = llList2String(gSessions, i+4);
+            if (ctx == "add_owner" || ctx == "add_trustee" || ctx == "blacklist") {
+                showInfoDialog(av, "No avatars found within 10 meters.");
+                sClear(av);
             }
-            integer i;
-            for(i=0;i<llGetListLength(gPlugins);i+=4){
-                if(getACL(av)<=llList2Integer(gPlugins,i+2))
-                    btns += [llList2String(gPlugins,i+1)];
-            }
-            while(llGetListLength(btns)%3!=0) btns += " ";
+        }
+    }
 
-            integer sel = llListFindList(btns,[msg]);
-            if(sel==-1) return;
-            string act = llList2String(ctxs,sel);
+    listen(integer chan, string nm, key av, string msg)
+    {
+        if (chan != DIALOG_CHAN) return;
 
-            if(act=="status"){ showStatus(av,chan); return; }
-            if(act=="apps"){   showApps(av,chan);   return; }
-            if(act=="lock" || act=="unlock"){ showLockDialog(av,chan); return; }
+        list sess = sGet(av);
+        integer page = 0;
+        string csv = "";
+        float expiry = 0.0;
+        string ctx = "";
+        string param = "";
+        string stepdata = "";
+        string menucsv = "";
+        if (llGetListLength(sess) != 0) {
+            page     = llList2Integer(sess, 1);
+            csv      = llList2String(sess, 2);
+            expiry   = llList2Float(sess, 3);
+            ctx      = llList2String(sess, 4);
+            param    = llList2String(sess, 5);
+            stepdata = llList2String(sess, 6);
+            menucsv  = llList2String(sess, 7);
+        }
 
-            list pi = llParseString2List(act,["|"],[]);
-            if(llGetListLength(pi)==2){
-                llMessageLinked((integer)llList2String(pi,1),510,
-                    llList2String(pi,0)+"|"+(string)av+"|"+(string)chan,NULL_KEY);
+        // --- Main Menu logic: map button index to actions
+        if (ctx == "main_menu") {
+            list allowed = llParseString2List(menucsv, [","], []);
+            list labels = labelsForACL(av);
+            integer sel = llListFindList(labels, [msg]);
+            if (sel != -1 && sel < llGetListLength(allowed)) {
+                string action = llList2String(allowed, sel);
+                if (DEBUG) llOwnerSay("[DEBUG] Main menu select: " + action + " by " + (string)av);
+                if (action == "Add Owner")        { beginAddOwner(av); return; }
+                if (action == "Release Sub")      { beginReleaseSub(av); return; }
+                if (action == "Add Trustee")      { beginAddTrustee(av); return; }
+                if (action == "Remove Trustee")   { beginRemoveTrustee(av); return; }
+                if (action == "Blacklist")        { beginBlacklist(av); return; }
+                if (action == "Unblacklist")      { beginUnblacklist(av); return; }
+                if (action == "Public Access")    { showPublicAccessDialog(av); return; }
+                if (action == "Apps")             { showApps(av); return; }
+                if (action == "Status")           { showStatus(av); return; }
+                if (action == "Runaway") {
+                    showUACDialog(av, "This will forcibly remove your primary owner and restore your access.");
+                    sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "runaway_confirm", "", "", "");
+                    return;
+                }
             }
             return;
         }
 
-        if(ctx=="lock_toggle"){
-            if(msg=="Lock"){   gLocked = TRUE;  }
-            if(msg=="Unlock"){ gLocked = FALSE; }
-            if(msg=="Lock" || msg=="Unlock"){
-                llDialog(av,"Done.",[" ","OK"," "],chan);
-                sessClear(av);
+        // --- Avatar and honorific selection menus (numbered for clarity) ---
+        // The rest of your listen() menu/confirmation flows are unchanged and as in your locked-in authoritative code...
+
+        // ...[EXACTLY as in your latest full authoritative script above for avatar pick, honorific, double confirm, etc.]...
+
+        // (This covers all ctx blocks: add_owner, add_owner_honorific, add_owner_confirm_wearer, etc.)
+        // === Paste your FULL LOGIC for each ctx here ===
+
+        // --- ADD OWNER ---
+        if (ctx == "add_owner") {
+            list keys = llParseString2List(csv, [","], []);
+            integer sel = (integer)msg;
+            if (sel > 0 && sel <= llGetListLength(keys)) {
+                key picked = llList2Key(keys, sel-1);
+                list honors = ownerHonorifics();
+                string honorDialog = "Select an honorific for your owner:\n" + numberedMenuText(honors);
+                sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "add_owner_honorific", (string)picked, "", "");
+                llDialog(av, honorDialog, buildNumberedButtons(honors), DIALOG_CHAN);
                 return;
             }
-            if(msg=="Cancel"){ sessClear(av); }
+        }
+        if (ctx == "add_owner_honorific") {
+            list honors = ownerHonorifics();
+            integer sel = (integer)msg;
+            if (sel > 0 && sel <= llGetListLength(honors)) {
+                key picked = (key)param;
+                string honorific = llList2String(honors, sel-1);
+                sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "add_owner_confirm_wearer", (string)picked, honorific, "");
+                showUACDialog(av, "Are you sure you wish to assign " + honorific + " " + llKey2Name(picked) + " as your new owner?");
+                return;
+            }
+        }
+        if (ctx == "add_owner_confirm_wearer") {
+            if (msg == "OK") {
+                key picked = (key)param;
+                string honorific = stepdata;
+                sSet(picked, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "add_owner_confirm_candidate", (string)av, honorific, "");
+                llDialog(picked, llKey2Name(av) + " wishes to assign you as their collar owner.\nHonorific: " + honorific + "\nDo you accept?", makeUACNavRow(), DIALOG_CHAN);
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); return; }
+        }
+        if (ctx == "add_owner_confirm_candidate") {
+            if (msg == "OK") {
+                key wearer = (key)param;
+                string honorific = stepdata;
+                gOwner = av;
+                gOwnerHonorific = honorific;
+                showInfoDialog(wearer, "You are now property of " + honorific + " " + llKey2Name(av));
+                showInfoDialog(av, "You are now owner of " + llKey2Name(wearer) + ".");
+                sClear(av);      // candidate
+                sClear(wearer);  // initiator
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); sClear((key)param); return; }
+        }
+
+        // --- RELEASE SUB ---
+        if (ctx == "release_sub_confirm_owner") {
+            if (msg == "OK") {
+                key wearer = llGetOwner();
+                sSet(wearer, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "release_sub_confirm_wearer", (string)av, "", "");
+                llDialog(wearer, llKey2Name(av) + " wishes to release you from their collar. Do you accept?", makeUACNavRow(), DIALOG_CHAN);
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); return; }
+        }
+        if (ctx == "release_sub_confirm_wearer") {
+            if (msg == "OK") {
+                gOwner = NULL_KEY;
+                gOwnerHonorific = "";
+                showInfoDialog(av, "You are no longer owned.");
+                showInfoDialog(llGetOwner(), "Collar is now unowned.");
+                sClear(av); // candidate
+                sClear(llGetOwner()); // initiator
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); sClear((key)param); return; }
+        }
+
+        // --- ADD TRUSTEE ---
+        if (ctx == "add_trustee") {
+            list keys = llParseString2List(csv, [","], []);
+            integer sel = (integer)msg;
+            if (sel > 0 && sel <= llGetListLength(keys)) {
+                key picked = llList2Key(keys, sel-1);
+                list honors = trusteeHonorifics();
+                string honorDialog = "Select an honorific for your trustee:\n" + numberedMenuText(honors);
+                sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "add_trustee_honorific", (string)picked, "", "");
+                llDialog(av, honorDialog, buildNumberedButtons(honors), DIALOG_CHAN);
+                return;
+            }
+        }
+        if (ctx == "add_trustee_honorific") {
+            list honors = trusteeHonorifics();
+            integer sel = (integer)msg;
+            if (sel > 0 && sel <= llGetListLength(honors)) {
+                key picked = (key)param;
+                string honorific = llList2String(honors, sel-1);
+                sSet(picked, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "add_trustee_confirm_candidate", (string)av, honorific, "");
+                llDialog(picked, llKey2Name(av) + " wishes to add you as trustee to their collar.\nHonorific: " + honorific + "\nDo you accept?", makeUACNavRow(), DIALOG_CHAN);
+                return;
+            }
+        }
+        if (ctx == "add_trustee_confirm_candidate") {
+            if (msg == "OK") {
+                key wearer = (key)param;
+                string honorific = stepdata;
+                gTrustees += av;
+                gTrusteeHonorifics += honorific;
+                showInfoDialog(wearer, llKey2Name(av) + " is now your trustee.");
+                showInfoDialog(av, "You are now a trustee for " + llKey2Name(wearer) + ".");
+                sClear(av); // candidate
+                sClear(wearer); // initiator
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); sClear((key)param); return; }
+        }
+
+        // --- REMOVE TRUSTEE ---
+        if (ctx == "remove_trustee") {
+            list keys = llParseString2List(csv, [","], []);
+            integer sel = (integer)msg;
+            if (sel > 0 && sel <= llGetListLength(keys)) {
+                key picked = llList2Key(keys, sel-1);
+                sSet(picked, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "remove_trustee_confirm_candidate", (string)av, "", "");
+                llDialog(picked, llKey2Name(av) + " wishes to remove you as a trustee. Do you accept?", makeUACNavRow(), DIALOG_CHAN);
+                return;
+            }
+        }
+        if (ctx == "remove_trustee_confirm_candidate") {
+            if (msg == "OK") {
+                key initiator = (key)param;
+                integer idx = gIdx(gTrustees, av);
+                if (idx != -1) {
+                    gTrustees = llDeleteSubList(gTrustees, idx, idx);
+                    gTrusteeHonorifics = llDeleteSubList(gTrusteeHonorifics, idx, idx);
+                    showInfoDialog(initiator, "Trustee removed.");
+                    showInfoDialog(av, "You have been removed as a trustee.");
+                }
+                sClear(av); // candidate
+                sClear(initiator); // initiator
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); sClear((key)param); return; }
+        }
+
+        // --- BLACKLIST ---
+        if (ctx == "blacklist") {
+            list keys = llParseString2List(csv, [","], []);
+            integer sel = (integer)msg;
+            if (sel > 0 && sel <= llGetListLength(keys)) {
+                key picked = llList2Key(keys, sel-1);
+                sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "blacklist_confirm", (string)picked, "", "");
+                showUACDialog(av, "You are about to blacklist " + llKey2Name(picked) + ". Continue?");
+                return;
+            }
+        }
+        if (ctx == "blacklist_confirm") {
+            if (msg == "OK") {
+                key picked = (key)param;
+                gBlacklist += picked;
+                showInfoDialog(av, "You have blacklisted " + llKey2Name(picked) + ".");
+                sClear(av);
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); return; }
+        }
+
+        // --- UNBLACKLIST ---
+        if (ctx == "unblacklist") {
+            list keys = llParseString2List(csv, [","], []);
+            integer sel = (integer)msg;
+            if (sel > 0 && sel <= llGetListLength(keys)) {
+                key picked = llList2Key(keys, sel-1);
+                sSet(av, 0, "", llGetUnixTime() + DIALOG_TIMEOUT, "unblacklist_confirm", (string)picked, "", "");
+                showUACDialog(av, "Remove " + llKey2Name(picked) + " from blacklist?");
+                return;
+            }
+        }
+        if (ctx == "unblacklist_confirm") {
+            if (msg == "OK") {
+                key picked = (key)param;
+                integer idx = gIdx(gBlacklist, picked);
+                if (idx != -1) {
+                    gBlacklist = llDeleteSubList(gBlacklist, idx, idx);
+                    showInfoDialog(av, llKey2Name(picked) + " has been removed from the blacklist.");
+                }
+                sClear(av);
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); return; }
+        }
+
+        // --- PUBLIC ACCESS TOGGLE
+        if (ctx == "public_toggle_confirm") {
+            if (msg == "Enable") {
+                gPublicAccess = TRUE;
+                showInfoDialog(av, "Public access is now ENABLED.");
+                sClear(av);
+                return;
+            }
+            if (msg == "Disable") {
+                gPublicAccess = FALSE;
+                showInfoDialog(av, "Public access is now DISABLED.");
+                sClear(av);
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); return; }
+        }
+
+        // --- RUNAWAY (owned wearer only)
+        if (ctx == "runaway_confirm") {
+            if (msg == "OK") {
+                gOwner = NULL_KEY;
+                gOwnerHonorific = "";
+                showInfoDialog(av, "You have run away and are now unowned.");
+                sClear(av);
+                return;
+            }
+            if (msg == "Cancel") { sClear(av); return; }
         }
     }
 
-    timer(){ timeoutCheck(); }
+    timer() { timeoutCheck(); }
 }
