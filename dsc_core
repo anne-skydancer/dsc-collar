@@ -178,18 +178,37 @@ default
     state_entry(){ if(DEBUG) llOwnerSay("[DEBUG] GUH state_entry");
                    llSetTimerEvent(1.0); }
 
-    touch_start(integer n){ showMainMenu(llDetectedKey(0)); }
+    touch_start(integer n)
+    { 
+        key toucher = (llDetectedKey(0));
+        integer acl=getACL(toucher);
+        string role;
+        if (acl == 1) role = "Owner";
+        else if (acl == 2) role = "Trustee";
+        else if (acl == 3) role = "Owned wearer";
+        else if (acl == 4) role = "Public";
+        else               role = "No access";
+        llOwnerSay("[DEBUG] Toucher " + (string)toucher + " has ACL level " + (string)acl + " (" + role = ")");
 
+        showMainMenu(toucher);
+    }
     link_message(integer sn,integer num,string str,key id)
     {
         /* plugin register/unregister */
-        if(num==500){
+        if(num == 500)
+        {
+            // expect: "register|<sn>|<label>|<min_acl>|<ctx>"
             list p = llParseStringKeepNulls(str,["|"],[]);
-            if(llGetListLength(p)>=4 && llList2String(p,0)=="register"){
-                addPlugin(sn,llList2String(p,1),
-                             (integer)llList2String(p,2),
-                             llList2String(p,3));
-                if(DEBUG) llOwnerSay("[PLUGIN] Registered "+llList2String(p,1));
+            if(llGetListLength(p)>=5 && llList2String(p,0) == "register")
+            {
+                integer sn = (integer)llList2Integer(p, 1);
+                string label = llList2String(p, 2);
+                integer minACL = (integer)llList2Integer(p,3);
+                string ctx = llList2String(p, 4);
+ 
+ 
+                addPlugin(sn, label, minACL, ctx);
+                if(DEBUG) llOwnerSay("[PLUGIN] Registered "+ "named " + label + " serial " + llList2String(p,1) + " with min. ACL= "+ (string)minACL + " context " + ctx);
             }
         }
         else if(num==501 && str=="unregister"){ removePlugin(sn); }
@@ -270,11 +289,10 @@ else if (num == 520)
 
             list pi = llParseString2List(act,["|"],[]);
             if(llGetListLength(pi)==2){
-                llMessageLinked((integer)llList2String(pi,1),510,
-                    llList2String(pi,0)+"|"+(string)av+"|"+(string)chan,NULL_KEY);
+                llMessageLinked(LINK_THIS,510,llList2String(pi,0) + "|" + (string)av + "|" + (string)chan,NULL_KEY);
             }
-            return;
-        }
+           }
+           return;
 
         if(ctx=="lock_toggle"){
             if(msg=="Lock"){   gLocked = TRUE;  }
