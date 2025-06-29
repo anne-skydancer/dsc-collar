@@ -283,17 +283,17 @@ default
 {
     state_entry()
     {
-        llMessageLinked(LINK_THIS, 500, "register|Access|3|access", NULL_KEY);
+        llMessageLinked(LINK_THIS, 500, "register|1001|Access|3|core", NULL_KEY);
         llSetTimerEvent(1.0);
         if (DEBUG) llOwnerSay("[Access DEBUG] Plugin ready.");
     }
 
-    link_message(integer sender_num, integer num, string str, key id)
+    link_message(integer sn, integer num, string str, key id)
     {
         // GUH sends: num=510, str="access|<avatar>|<dialog_chan>"
         if (num == 510) {
             list args = llParseString2List(str, ["|"], []);
-            if (llList2String(args,0) == "access" && llGetListLength(args) >= 3) {
+            if (llList2String(args,0) == "core" && llGetListLength(args) >= 3) {
                 key av = (key)llList2String(args,1);
                 integer dialog_chan = (integer)llList2String(args,2);
                 showAccessMenu(av, dialog_chan);
