@@ -24,6 +24,27 @@ list gSessions;
 /*──────────────────────────────────────────────────*/
 /*  SESSION HELPERS  (same layout as other plugins) */
 /*──────────────────────────────────────────────────*/
+
+// ─── Reorder so nav stays bottom, and body rows go top→down ───
+list reorderButtons(list buttons)
+{
+    integer L = llGetListLength(buttons);
+    // nav row is always the last three
+    list nav  = llList2List(buttons, L - 3, L - 1);
+    // everything else
+    list body = llList2List(buttons, 0, L - 4);
+
+    // how many full rows of 3 in body?
+    integer rows = llGetListLength(body) / 3;
+    list reversedBody = [];
+    integer r;
+    // grab each row backwards
+    for (r = rows - 1; r >= 0; --r) {
+        reversedBody += llList2List(body, r * 3, r * 3 + 2);
+    }
+    return nav + reversedBody;
+}
+
 integer sIdx(key av){ return llListFindList(gSessions,[av]); }
 
 integer sSet(key av,integer page,string csv,float expiry,string ctx,
@@ -92,20 +113,27 @@ showAnimMenu(key av, integer page, integer chan)
     list buttons = pageAnims;
 
     /* navigation buttons */
-    if(page > 0)             buttons += ["« Prev"];
-    else                     buttons += [" "];
-    buttons += ["Relax"];                      // always present
-    if(page < pages - 1)     buttons += ["Next »"];
-    else                     buttons += [" "];
+    if (page > 0)             buttons += ["« Prev"];
+    else                      buttons += [" "];
+    buttons += ["Relax"];
+    if (page < pages - 1)     buttons += ["Next »"];
+    else                      buttons += [" "];
 
-    while(llGetListLength(buttons) % 3 != 0) buttons += " ";
+    /* pad to multiple of 3 */
+    while (llGetListLength(buttons) % 3 != 0)
+        buttons += [" "];
+
+    /* reorder so nav stays at bottom, body rows go top→down */
+    buttons = reorderButtons(buttons);
 
     /* store context */
-    sSet(av,page,"",llGetUnixTime()+DIALOG_TIMEOUT,
-         "anim_menu","","","",chan);
+    sSet(av, page, "", llGetUnixTime() + DIALOG_TIMEOUT,
+         "anim_menu", "", "", "", chan);
 
-    string header = "Select an animation (page "+(string)(page+1)+"/"+(string)pages+"):";
-    llDialog(av,header,buttons,chan);
+    /* show dialog */
+    string header = "Select an animation (page " +
+                    (string)(page+1) + "/" + (string)pages + "):";
+    llDialog(av, header, buttons, chan);
 }
 
 /*──────────────────────────────────────────────────*/
@@ -146,7 +174,7 @@ default
         llRequestPermissions(llGetOwner(),PERMISSION_TRIGGER_ANIMATION);
 
         /* register with GUH (ACL 4 = anyone not black-listed) */
-        llMessageLinked(LINK_THIS,500,"register|Animate|4|animate",NULL_KEY);
+        llMessageLinked(LINK_THIS,500,"register|1002|Animate|4|animate",NULL_KEY);
 
         llSetTimerEvent(1.0);
         if(DEBUG) llOwnerSay("[Animate] ready, "+(string)count+" anims.");
