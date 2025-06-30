@@ -1,0 +1,173 @@
+// ───────────────────────────────────────────────────────────────
+//  Collar Chat Plugin  (Strict LSL)
+//  Version: 2025-07-07c – dynamic module list from 500 msgs
+// ───────────────────────────────────────────────────────────────
+
+integer DEBUG = TRUE;
+float   DIALOG_TIMEOUT   = 180.0;
+
+// Persistent settings
+string  gPrefix          = "";    // chat command prefix (2–5 chars)
+integer gPublicListener  = FALSE; // whether we watch public chat channels
+
+// dynamically filled from other plugins' 500-register messages
+list    gModules         = [];    // ‹‹ NEW ››
+
+// Session cache: [av,page,csv,expiry,ctx,param,step,menucsv,chan,listen]
+list    gSessions;
+
+//───────────────────────────────────────────────────────────────
+//  Helpers
+//───────────────────────────────────────────────────────────────
+integer sIdx(key av) {
+    return llListFindList(gSessions, [av]);
+}
+integer sSet(key av, integer page, string csv, float expiry,
+             string ctx, string param, string step,
+             string menucsv, integer chan)
+{
+    integer i = sIdx(av);
+    if (i != -1) {
+        integer old = llList2Integer(gSessions, i+9);
+        if (old != -1) llListenRemove(old);
+        gSessions = llDeleteSubList(gSessions, i, i+9);
+    }
+    integer lh = llListen(chan, "", av, "");
+    gSessions += [av, page, csv, expiry, ctx, param, step, menucsv, chan, lh];
+    return TRUE;
+}
+integer sClear(key av) {
+    integer i = sIdx(av);
+    if (i != -1) {
+        integer old = llList2Integer(gSessions, i+9);
+        if (old != -1) llListenRemove(old);
+        gSessions = llDeleteSubList(gSessions, i, i+9);
+    }
+    return TRUE;
+}
+list sGet(key av) {
+    integer i = sIdx(av);
+    if (i != -1) return llList2List(gSessions, i, i+9);
+    return [];
+}
+
+//───────────────────────────────────────────────────────────────
+//  Menu definitions
+//───────────────────────────────────────────────────────────────
+list coreMenuButtons() { return ["Change Prefix", "Toggle Public"]; }
+list coreMenuCtxs()    { return ["enter_prefix",   "toggle_public"]; }
+
+showChatMenu(key av, integer chan) {
+    list btns = coreMenuButtons();
+    // pad to multiple of 3
+    while (llGetListLength(btns) % 3 != 0) btns += " ";
+    sSet(av, 0, " ",
+         llGetUnixTime() + DIALOG_TIMEOUT,
+         "chat_main", "", "",
+         llDumpList2String(coreMenuCtxs(), ","), chan);
+    llDialog(av, "Chat Plugin Options:", btns, chan);
+}
+
+//───────────────────────────────────────────────────────────────
+//  Timeout
+//───────────────────────────────────────────────────────────────
+timeoutCheck() {
+    integer now = llGetUnixTime();
+    integer i = 0;
+    while (i < llGetListLength(gSessions)) {
+        float expiry = llList2Float(gSessions, i+3);
+        key av       = llList2Key(gSessions, i);
+        if (now > expiry) {
+            llInstantMessage(av, "Chat menu timed out.");
+            sClear(av);
+        } else {
+            i += 10;
+        }
+    }
+}
+
+//───────────────────────────────────────────────────────────────
+//  Entry Point
+//───────────────────────────────────────────────────────────────
+
+default
+{
+    state_entry()
+    {
+        if (DEBUG) llOwnerSay("[Chat] state_entry");
+        llSetTimerEvent(1.0);
+        // register Chat itself:
+        llMessageLinked(LINK_THIS,500,"register|1003|Chat|3|chat",NULL_KEY);
+    }
+
+    link_message(integer sender, integer num, string str, key id)
+    {
+        if (num == 500)
+        {
+            // everyone announces themselves:
+            list p = llParseStringKeepNulls(str,["|"],[]);
+            // p = ["register", "<sn>", "<label>", "<min_acl>", "<ctx>"]
+            if (llGetListLength(p) >= 5 && llList2String(p,0) == "register")
+            {
+                string ctx = llList2String(p,4);             // ‹‹ NEW ››
+                if (llListFindList(gModules,[ctx]) == -1)
+                {
+                    gModules += [ctx];                       // ‹‹ NEW ››
+                    if (DEBUG) llOwnerSay("[Chat] learned module: " + ctx);
+                }
+            }
+            return;
+        }
+        // GUH → Chat: 510 open menu
+        if (num == 510)
+        {
+            list a = llParseString2List(str, ["|"], []);
+            if (llGetListLength(a) >= 3 && llList2String(a,0) == "chat")
+            {
+                key av   = (key) llList2String(a,1);
+                integer chan = (integer) llList2String(a,2);
+                if (DEBUG) llOwnerSay("[Chat] opening menu for " + (string)av);
+                showChatMenu(av, chan);
+            }
+        }
+    }
+
+    listen(integer chan, string name, key id, string msg)
+    {
+        // … your dialog session and textbox code unchanged …
+
+        // Public‐chat handler:
+        if (gPublicListener && (chan == 0 || chan == 1))
+        {
+            if (gPrefix == "") return;
+            list tokens = llParseString2List(msg, [" "], []);
+            if (llGetListLength(tokens) < 2) return;
+
+            string pfx    = llToLower(llList2String(tokens,0));
+            string module = llToLower(llList2String(tokens,1));
+            if (pfx != llToLower(gPrefix)) return;
+
+            // *dynamic* allow-list check:
+            if (llListFindList(gModules,[module]) == -1)
+            {
+                if (DEBUG) llOwnerSay("[Chat] UNKNOWN module → " + module);
+                return;
+            }
+
+            // forward to GUH (510)
+            integer argc = llGetListLength(tokens) - 2;
+            string  out  = module + "|" + (string)id + "|" + (string)chan;
+            integer i;
+            for (i = 0; i < argc; ++i)
+            {
+                out += "|" + llList2String(tokens,2+i);
+            }
+            llMessageLinked(LINK_THIS,510,out,NULL_KEY);
+            if (DEBUG) llOwnerSay("[Chat] cmd→ " + out);
+        }
+    }
+
+    timer() {
+        timeoutCheck();
+    }
+}
