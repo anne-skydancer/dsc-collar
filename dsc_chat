@@ -1,94 +1,130 @@
-// ───────────────────────────────────────────────────────────────
-//  Collar Chat Plugin  (Strict LSL)
-//  Version: 2025-07-07c – dynamic module list from 500 msgs
-// ───────────────────────────────────────────────────────────────
+/* =============================================================
+   BLOCK: GLOBAL VARIABLES & CONFIG BEGIN
+   ============================================================= */
+/*
+    Collar Chat Plugin (Strict LSL, 2025-07-07c)
+    - Handles chat commands, options menu, and dynamic module learning.
+    - Compatible with GUH plugin framework.
+*/
 
 integer DEBUG = TRUE;
-float   DIALOG_TIMEOUT   = 180.0;
+float   dialog_timeout     = 180.0;
 
-// Persistent settings
-string  gPrefix          = "";    // chat command prefix (2–5 chars)
-integer gPublicListener  = FALSE; // whether we watch public chat channels
+/* Persistent chat settings */
+string  g_prefix           = "";      // Command prefix (2–5 chars)
+integer g_public_listener  = FALSE;   // Whether to watch public chat
 
-// dynamically filled from other plugins' 500-register messages
-list    gModules         = [];    // ‹‹ NEW ››
+/* Dynamic module registry from 500-register plugin messages */
+list    g_modules          = [];      // Holds ctx names of known modules
 
-// Session cache: [av,page,csv,expiry,ctx,param,step,menucsv,chan,listen]
-list    gSessions;
+/* Session cache: [av, page, csv, expiry, ctx, param, step, menucsv, chan, listen] */
+list    g_sessions;
+/* =============================================================
+   BLOCK: GLOBAL VARIABLES & CONFIG END
+   ============================================================= */
 
-//───────────────────────────────────────────────────────────────
-//  Helpers
-//───────────────────────────────────────────────────────────────
-integer sIdx(key av) {
-    return llListFindList(gSessions, [av]);
-}
-integer sSet(key av, integer page, string csv, float expiry,
-             string ctx, string param, string step,
-             string menucsv, integer chan)
+
+/* =============================================================
+   BLOCK: SESSION HELPERS BEGIN
+   ============================================================= */
+/*
+    Session management helpers: consistent with core/access/animate plugins.
+*/
+
+integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
+
+integer s_set(key av, integer page, string csv, float expiry,
+              string ctx, string param, string step, string menucsv, integer chan)
 {
-    integer i = sIdx(av);
+    integer i = s_idx(av);
     if (i != -1) {
-        integer old = llList2Integer(gSessions, i+9);
+        integer old = llList2Integer(g_sessions, i+9);
         if (old != -1) llListenRemove(old);
-        gSessions = llDeleteSubList(gSessions, i, i+9);
+        g_sessions = llDeleteSubList(g_sessions, i, i+9);
     }
     integer lh = llListen(chan, "", av, "");
-    gSessions += [av, page, csv, expiry, ctx, param, step, menucsv, chan, lh];
+    g_sessions += [av, page, csv, expiry, ctx, param, step, menucsv, chan, lh];
     return TRUE;
 }
-integer sClear(key av) {
-    integer i = sIdx(av);
+integer s_clear(key av) {
+    integer i = s_idx(av);
     if (i != -1) {
-        integer old = llList2Integer(gSessions, i+9);
+        integer old = llList2Integer(g_sessions, i+9);
         if (old != -1) llListenRemove(old);
-        gSessions = llDeleteSubList(gSessions, i, i+9);
+        g_sessions = llDeleteSubList(g_sessions, i, i+9);
     }
     return TRUE;
 }
-list sGet(key av) {
-    integer i = sIdx(av);
-    if (i != -1) return llList2List(gSessions, i, i+9);
+list s_get(key av) {
+    integer i = s_idx(av);
+    if (i != -1) return llList2List(g_sessions, i, i+9);
     return [];
 }
+/* =============================================================
+   BLOCK: SESSION HELPERS END
+   ============================================================= */
 
-//───────────────────────────────────────────────────────────────
-//  Menu definitions
-//───────────────────────────────────────────────────────────────
-list coreMenuButtons() { return ["Change Prefix", "Toggle Public"]; }
-list coreMenuCtxs()    { return ["enter_prefix",   "toggle_public"]; }
 
-showChatMenu(key av, integer chan) {
-    list btns = coreMenuButtons();
-    // pad to multiple of 3
+/* =============================================================
+   BLOCK: MENU DEFINITIONS BEGIN
+   ============================================================= */
+/*
+    Core menu buttons and context identifiers for dialog menus.
+*/
+
+list core_menu_buttons() { return ["Change Prefix", "Toggle Public"]; }
+list core_menu_ctxs()    { return ["enter_prefix",   "toggle_public"]; }
+
+show_chat_menu(key av, integer chan) {
+    list btns = core_menu_buttons();
     while (llGetListLength(btns) % 3 != 0) btns += " ";
-    sSet(av, 0, " ",
-         llGetUnixTime() + DIALOG_TIMEOUT,
-         "chat_main", "", "",
-         llDumpList2String(coreMenuCtxs(), ","), chan);
+    s_set(av, 0, " ",
+          llGetUnixTime() + dialog_timeout,
+          "chat_main", "", "",
+          llDumpList2String(core_menu_ctxs(), ","), chan);
     llDialog(av, "Chat Plugin Options:", btns, chan);
 }
+/* =============================================================
+   BLOCK: MENU DEFINITIONS END
+   ============================================================= */
 
-//───────────────────────────────────────────────────────────────
-//  Timeout
-//───────────────────────────────────────────────────────────────
-timeoutCheck() {
+
+/* =============================================================
+   BLOCK: TIMEOUT MANAGEMENT BEGIN
+   ============================================================= */
+/*
+    Dialog timeout and session expiry logic.
+*/
+
+timeout_check() {
     integer now = llGetUnixTime();
     integer i = 0;
-    while (i < llGetListLength(gSessions)) {
-        float expiry = llList2Float(gSessions, i+3);
-        key av       = llList2Key(gSessions, i);
+    while (i < llGetListLength(g_sessions)) {
+        float expiry = llList2Float(g_sessions, i+3);
+        key av       = llList2Key(g_sessions, i);
         if (now > expiry) {
             llInstantMessage(av, "Chat menu timed out.");
-            sClear(av);
+            s_clear(av);
         } else {
             i += 10;
         }
     }
 }
+/* =============================================================
+   BLOCK: TIMEOUT MANAGEMENT END
+   ============================================================= */
 
-//───────────────────────────────────────────────────────────────
-//  Entry Point
-//───────────────────────────────────────────────────────────────
+
+/* =============================================================
+   BLOCK: MAIN EVENT LOOP BEGIN
+   ============================================================= */
+/*
+    Main state and event handling for Chat plugin:
+    - state_entry:     GUH plugin registration, sets timer.
+    - link_message:    Learns new module ctx from register, opens menu on GUH 510.
+    - listen:          Handles dialog session logic and public chat command relay.
+    - timer:           Calls timeout_check.
+*/
 
 default
 {
@@ -96,23 +132,23 @@ default
     {
         if (DEBUG) llOwnerSay("[Chat] state_entry");
         llSetTimerEvent(1.0);
-        // register Chat itself:
-        llMessageLinked(LINK_THIS,500,"register|1003|Chat|3|chat",NULL_KEY);
+        // Register Chat with GUH
+        llMessageLinked(LINK_THIS, 500, "register|1003|Chat|3|chat", NULL_KEY);
     }
 
     link_message(integer sender, integer num, string str, key id)
     {
         if (num == 500)
         {
-            // everyone announces themselves:
-            list p = llParseStringKeepNulls(str,["|"],[]);
+            // Plugin registration from other modules: learn ctx
+            list p = llParseStringKeepNulls(str, ["|"], []);
             // p = ["register", "<sn>", "<label>", "<min_acl>", "<ctx>"]
-            if (llGetListLength(p) >= 5 && llList2String(p,0) == "register")
+            if (llGetListLength(p) >= 5 && llList2String(p, 0) == "register")
             {
-                string ctx = llList2String(p,4);             // ‹‹ NEW ››
-                if (llListFindList(gModules,[ctx]) == -1)
+                string ctx = llList2String(p, 4);
+                if (llListFindList(g_modules, [ctx]) == -1)
                 {
-                    gModules += [ctx];                       // ‹‹ NEW ››
+                    g_modules += [ctx];
                     if (DEBUG) llOwnerSay("[Chat] learned module: " + ctx);
                 }
             }
@@ -122,52 +158,58 @@ default
         if (num == 510)
         {
             list a = llParseString2List(str, ["|"], []);
-            if (llGetListLength(a) >= 3 && llList2String(a,0) == "chat")
+            if (llGetListLength(a) >= 3 && llList2String(a, 0) == "chat")
             {
-                key av   = (key) llList2String(a,1);
-                integer chan = (integer) llList2String(a,2);
+                key av   = (key) llList2String(a, 1);
+                integer chan = (integer) llList2String(a, 2);
                 if (DEBUG) llOwnerSay("[Chat] opening menu for " + (string)av);
-                showChatMenu(av, chan);
+                show_chat_menu(av, chan);
             }
         }
     }
 
     listen(integer chan, string name, key id, string msg)
     {
-        // … your dialog session and textbox code unchanged …
+        /* 
+            Dialog/menu logic would go here, using s_get(), s_set(), and s_clear().
+            You can add more dialog code as needed, e.g., to set prefix or toggle public.
+        */
 
-        // Public‐chat handler:
-        if (gPublicListener && (chan == 0 || chan == 1))
+        // Public chat command handler
+        if (g_public_listener && (chan == 0 || chan == 1))
         {
-            if (gPrefix == "") return;
+            if (g_prefix == "") return;
             list tokens = llParseString2List(msg, [" "], []);
             if (llGetListLength(tokens) < 2) return;
 
-            string pfx    = llToLower(llList2String(tokens,0));
-            string module = llToLower(llList2String(tokens,1));
-            if (pfx != llToLower(gPrefix)) return;
+            string pfx    = llToLower(llList2String(tokens, 0));
+            string module = llToLower(llList2String(tokens, 1));
+            if (pfx != llToLower(g_prefix)) return;
 
-            // *dynamic* allow-list check:
-            if (llListFindList(gModules,[module]) == -1)
+            // Dynamic module allow-list check:
+            if (llListFindList(g_modules, [module]) == -1)
             {
                 if (DEBUG) llOwnerSay("[Chat] UNKNOWN module → " + module);
                 return;
             }
 
-            // forward to GUH (510)
+            // Forward to GUH (510)
             integer argc = llGetListLength(tokens) - 2;
-            string  out  = module + "|" + (string)id + "|" + (string)chan;
+            string out = module + "|" + (string)id + "|" + (string)chan;
             integer i;
             for (i = 0; i < argc; ++i)
             {
-                out += "|" + llList2String(tokens,2+i);
+                out += "|" + llList2String(tokens, 2 + i);
             }
-            llMessageLinked(LINK_THIS,510,out,NULL_KEY);
+            llMessageLinked(LINK_THIS, 510, out, NULL_KEY);
             if (DEBUG) llOwnerSay("[Chat] cmd→ " + out);
         }
     }
 
     timer() {
-        timeoutCheck();
+        timeout_check();
     }
 }
+/* =============================================================
+   BLOCK: MAIN EVENT LOOP END
+   ============================================================= */
