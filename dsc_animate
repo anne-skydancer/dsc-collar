@@ -1,255 +1,302 @@
-// =============================================================
-//  Collar Animate Plugin  (Strict LSL)
-//  Version: 2025-07-06  – fixes Relax error, pre-empt perms
-// =============================================================
+/* =============================================================
+   BLOCK: GLOBAL VARIABLES & CONFIG BEGIN
+   ============================================================= */
+/*
+    Collar Animate Plugin (Strict LSL, 2025-07-06)
+    - Handles animation menu, plays animations for the collar wearer.
+    - Registers itself as a plugin with the GUH core.
+    - Uses consistent session management with other GUH scripts.
+*/
 
 integer DEBUG = TRUE;
 
-/*──────────────────────────────────────────────────*/
-/*  CONFIG / CONSTANTS                              */
-/*──────────────────────────────────────────────────*/
-integer PAGE_SIZE       = 9;      // 9 dialog buttons
-float   DIALOG_TIMEOUT  = 180.0;
+/* Plugin configuration constants */
+integer page_size      = 9;      // Dialog buttons per page
+float   dialog_timeout = 180.0;
 
-/*──────────────────────────────────────────────────*/
-/*  GLOBAL STATE                                    */
-/*──────────────────────────────────────────────────*/
-list    gAnimNames      = [];     // sorted animation names
-integer gHavePerms      = FALSE;  // got PERMISSION_TRIGGER_ANIMATION
-string  gCurrentAnim    = "";     // animation currently playing
+/* Global animation/plugin state */
+list    g_anim_names   = [];     // Sorted animation names
+integer g_have_perms   = FALSE;  // TRUE if PERMISSION_TRIGGER_ANIMATION granted
+string  g_current_anim = "";     // Name of animation currently playing
 
-/* Session cache: [av,page,csv,expiry,ctx,param,step,menucsv,chan,listen] */
-list gSessions;
+/* Session cache: [av, page, csv, expiry, ctx, param, step, menucsv, chan, listen] */
+list    g_sessions;
+/* =============================================================
+   BLOCK: GLOBAL VARIABLES & CONFIG END
+   ============================================================= */
 
-/*──────────────────────────────────────────────────*/
-/*  SESSION HELPERS  (same layout as other plugins) */
-/*──────────────────────────────────────────────────*/
 
-// ─── Reorder so nav stays bottom, and body rows go top→down ───
-list reorderButtons(list buttons)
+/* =============================================================
+   BLOCK: SESSION HELPERS BEGIN
+   ============================================================= */
+/*
+    Helpers for session storage, removal, lookup.
+    All helpers match conventions in dsc_core and access plugins.
+*/
+
+integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
+
+integer s_set(key av, integer page, string csv, float expiry, string ctx,
+              string param, string step, string menucsv, integer chan)
 {
-    integer L = llGetListLength(buttons);
-    // nav row is always the last three
-    list nav  = llList2List(buttons, L - 3, L - 1);
-    // everything else
-    list body = llList2List(buttons, 0, L - 4);
-
-    // how many full rows of 3 in body?
-    integer rows = llGetListLength(body) / 3;
-    list reversedBody = [];
-    integer r;
-    // grab each row backwards
-    for (r = rows - 1; r >= 0; --r) {
-        reversedBody += llList2List(body, r * 3, r * 3 + 2);
+    integer i = s_idx(av);
+    if (~i) {
+        integer old = llList2Integer(g_sessions, i+9);
+        if (old != -1) llListenRemove(old);
+        g_sessions = llDeleteSubList(g_sessions, i, i+9);
     }
-    return nav + reversedBody;
-}
-
-integer sIdx(key av){ return llListFindList(gSessions,[av]); }
-
-integer sSet(key av,integer page,string csv,float expiry,string ctx,
-             string param,string step,string menucsv,integer chan)
-{
-    integer i=sIdx(av);
-    if(~i){
-        integer old = llList2Integer(gSessions,i+9);
-        if(old!=-1) llListenRemove(old);
-        gSessions = llDeleteSubList(gSessions,i,i+9);
-    }
-    integer lh = llListen(chan,"",av,"");
-    gSessions += [av,page,csv,expiry,ctx,param,step,menucsv,chan,lh];
+    integer lh = llListen(chan, "", av, "");
+    g_sessions += [av, page, csv, expiry, ctx, param, step, menucsv, chan, lh];
     return TRUE;
 }
-integer sClear(key av){
-    integer i=sIdx(av);
-    if(~i){
-        integer old=llList2Integer(gSessions,i+9);
-        if(old!=-1) llListenRemove(old);
-        gSessions = llDeleteSubList(gSessions,i,i+9);
+integer s_clear(key av)
+{
+    integer i = s_idx(av);
+    if (~i) {
+        integer old = llList2Integer(g_sessions, i+9);
+        if (old != -1) llListenRemove(old);
+        g_sessions = llDeleteSubList(g_sessions, i, i+9);
     }
     return TRUE;
 }
-list sGet(key av){
-    integer i=sIdx(av);
-    if(~i) return llList2List(gSessions,i,i+9);
+list s_get(key av)
+{
+    integer i = s_idx(av);
+    if (~i) return llList2List(g_sessions, i, i+9);
     return [];
 }
+/* =============================================================
+   BLOCK: SESSION HELPERS END
+   ============================================================= */
 
-/*──────────────────────────────────────────────────*/
-/*  ANIMATION PLAY / STOP                           */
-/*──────────────────────────────────────────────────*/
-playAnim(string anim)
+
+/* =============================================================
+   BLOCK: ANIMATION HANDLING BEGIN
+   ============================================================= */
+/*
+    Functions to play, stop, and queue animations, handling permissions.
+    Follows strict LSL (no ternaries, explicit if/else).
+*/
+
+play_anim(string anim)
 {
-    if(!gHavePerms)
-    {   /* queue until permissions arrive */
+    if (!g_have_perms)
+    {
+        /* Queue animation until permissions are granted */
         llSetObjectDesc(anim);
-        llRequestPermissions(llGetOwner(),PERMISSION_TRIGGER_ANIMATION);
+        llRequestPermissions(llGetOwner(), PERMISSION_TRIGGER_ANIMATION);
         return;
     }
 
-    if(gCurrentAnim != "")
-        llStopAnimation(gCurrentAnim);
+    if (g_current_anim != "")
+        llStopAnimation(g_current_anim);
 
     llStartAnimation(anim);
-    gCurrentAnim = anim;
+    g_current_anim = anim;
+}
+/* =============================================================
+   BLOCK: ANIMATION HANDLING END
+   ============================================================= */
+
+
+/* =============================================================
+   BLOCK: MENU BUILDING BEGIN
+   ============================================================= */
+/*
+    Dialog/menu utilities for animation pages and navigation.
+    - Button order reversed so nav is always on the bottom row.
+    - Navigation rows: « Prev | Relax | Next »
+    - Pads dialog to multiples of 3.
+*/
+
+list reorder_buttons(list buttons)
+{
+    integer L = llGetListLength(buttons);
+    /* Navigation row is always the last three buttons */
+    list nav  = llList2List(buttons, L - 3, L - 1);
+    list body = llList2List(buttons, 0, L - 4);
+
+    integer rows = llGetListLength(body) / 3;
+    list reversed_body = [];
+    integer r;
+    for (r = rows - 1; r >= 0; --r) {
+        reversed_body += llList2List(body, r * 3, r * 3 + 2);
+    }
+    return nav + reversed_body;
 }
 
-/*──────────────────────────────────────────────────*/
-/*  MENU BUILDING                                   */
-/*──────────────────────────────────────────────────*/
 list slice(list L, integer start, integer count)
 {
-    return llList2List(L,start,start+count-1);
+    return llList2List(L, start, start + count - 1);
 }
-showAnimMenu(key av, integer page, integer chan)
+
+show_anim_menu(key av, integer page, integer chan)
 {
-    integer total = llGetListLength(gAnimNames);
-    integer pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+    integer total = llGetListLength(g_anim_names);
+    integer pages = (total + page_size - 1) / page_size;
 
-    /* build list for this page */
-    integer start = page * PAGE_SIZE;
-    list pageAnims = slice(gAnimNames, start, PAGE_SIZE);
+    integer start = page * page_size;
+    list page_anims = slice(g_anim_names, start, page_size);
 
-    list buttons = pageAnims;
+    list buttons = page_anims;
 
-    /* navigation buttons */
-    if (page > 0)             buttons += ["« Prev"];
-    else                      buttons += [" "];
+    /* Navigation row */
+    if (page > 0)        buttons += ["« Prev"];
+    else                 buttons += [" "];
     buttons += ["Relax"];
-    if (page < pages - 1)     buttons += ["Next »"];
-    else                      buttons += [" "];
+    if (page < pages - 1) buttons += ["Next »"];
+    else                  buttons += [" "];
 
-    /* pad to multiple of 3 */
+    /* Pad to multiple of 3 for llDialog */
     while (llGetListLength(buttons) % 3 != 0)
         buttons += [" "];
 
-    /* reorder so nav stays at bottom, body rows go top→down */
-    buttons = reorderButtons(buttons);
+    buttons = reorder_buttons(buttons);
 
-    /* store context */
-    sSet(av, page, "", llGetUnixTime() + DIALOG_TIMEOUT,
-         "anim_menu", "", "", "", chan);
+    s_set(av, page, "", llGetUnixTime() + dialog_timeout,
+          "anim_menu", "", "", "", chan);
 
-    /* show dialog */
     string header = "Select an animation (page " +
-                    (string)(page+1) + "/" + (string)pages + "):";
+                    (string)(page + 1) + "/" + (string)pages + "):";
     llDialog(av, header, buttons, chan);
 }
+/* =============================================================
+   BLOCK: MENU BUILDING END
+   ============================================================= */
 
-/*──────────────────────────────────────────────────*/
-/*  TIMEOUT                                         */
-/*──────────────────────────────────────────────────*/
-timeoutCheck()
+
+/* =============================================================
+   BLOCK: TIMEOUT MANAGEMENT BEGIN
+   ============================================================= */
+/*
+    Dialog timeout logic, clearing expired sessions and notifying avatars.
+*/
+
+timeout_check()
 {
     integer now = llGetUnixTime();
-    integer i=0;
-    while(i<llGetListLength(gSessions))
+    integer i = 0;
+    while (i < llGetListLength(g_sessions))
     {
-        float exp = llList2Float(gSessions,i+3);
-        key  av  = llList2Key(gSessions,i);
-        if(now>exp)
+        float exp = llList2Float(g_sessions, i+3);
+        key  av  = llList2Key(g_sessions, i);
+        if (now > exp)
         {
-            llInstantMessage(av,"Menu timed out.");
-            sClear(av);
+            llInstantMessage(av, "Menu timed out.");
+            s_clear(av);
         }
         else i += 10;
     }
 }
+/* =============================================================
+   BLOCK: TIMEOUT MANAGEMENT END
+   ============================================================= */
 
-/*──────────────────────────────────────────────────*/
-/*  DEFAULT STATE                                   */
-/*──────────────────────────────────────────────────*/
+
+/* =============================================================
+   BLOCK: MAIN EVENT LOOP BEGIN
+   ============================================================= */
+/*
+    Main state and event handling for GUH Animate plugin:
+    - state_entry:     Inventory scan, permission request, GUH registration.
+    - run_time_permissions: Handles queued animation play after perms arrive.
+    - link_message:    GUH plugin invocation opens anim menu.
+    - listen:          Handles menu navigation, anim trigger, relax.
+    - timer:           Calls timeout_check.
+    - changed:         Requests permission again if collar owner changes.
+*/
+
 default
 {
     state_entry()
     {
-        /* gather animations */
+        /* Gather all animations from inventory */
         integer count = llGetInventoryNumber(INVENTORY_ANIMATION);
         integer i;
-        for(i=0;i<count;i++)
-            gAnimNames += llGetInventoryName(INVENTORY_ANIMATION,i);
-        gAnimNames = llListSort(gAnimNames,1,TRUE);      // alphabetic
+        for (i = 0; i < count; i++)
+            g_anim_names += llGetInventoryName(INVENTORY_ANIMATION, i);
+        g_anim_names = llListSort(g_anim_names, 1, TRUE);
 
-        /* pre-empt permission */
-        llRequestPermissions(llGetOwner(),PERMISSION_TRIGGER_ANIMATION);
+        /* Request animation perms pre-emptively */
+        llRequestPermissions(llGetOwner(), PERMISSION_TRIGGER_ANIMATION);
 
-        /* register with GUH (ACL 4 = anyone not black-listed) */
-        llMessageLinked(LINK_THIS,500,"register|1002|Animate|4|animate",NULL_KEY);
+        /* Register plugin with GUH: serial 1002, ACL 4 (anyone not blacklisted) */
+        llMessageLinked(LINK_THIS, 500, "register|1002|Animate|4|animate", NULL_KEY);
 
         llSetTimerEvent(1.0);
-        if(DEBUG) llOwnerSay("[Animate] ready, "+(string)count+" anims.");
+        if (DEBUG) llOwnerSay("[Animate] ready, " + (string)count + " anims.");
     }
 
-    /* permission result */
     run_time_permissions(integer perms)
     {
-        if(perms & PERMISSION_TRIGGER_ANIMATION)
+        if (perms & PERMISSION_TRIGGER_ANIMATION)
         {
-            gHavePerms = TRUE;
+            g_have_perms = TRUE;
             string queued = llGetObjectDesc();
-            if(queued != "")
+            if (queued != "")
             {
                 llStartAnimation(queued);
-                gCurrentAnim = queued;
+                g_current_anim = queued;
                 llSetObjectDesc("");
             }
         }
     }
 
-    /* GUH opens us */
-    link_message(integer sender,integer num,string str,key id)
+    link_message(integer sender, integer num, string str, key id)
     {
-        if(num==510)
+        if (num == 510)
         {
-            list a = llParseString2List(str,["|"],[]);
-            if(llList2String(a,0)=="animate" && llGetListLength(a)>=3)
+            list a = llParseString2List(str, ["|"], []);
+            if (llList2String(a, 0) == "animate" && llGetListLength(a) >= 3)
             {
-                key av   = (key)llList2String(a,1);
-                integer chan = (integer)llList2String(a,2);
-                showAnimMenu(av,0,chan);
+                key av   = (key)llList2String(a, 1);
+                integer chan = (integer)llList2String(a, 2);
+                show_anim_menu(av, 0, chan);
             }
         }
     }
 
-    listen(integer chan,string nm,key av,string msg)
+    listen(integer chan, string nm, key av, string msg)
     {
-        list s = sGet(av);
-        if(llGetListLength(s)==0) return;
-        integer session_chan = llList2Integer(s,8);
-        if(chan!=session_chan) return;
+        list s = s_get(av);
+        if (llGetListLength(s) == 0) return;
+        integer session_chan = llList2Integer(s, 8);
+        if (chan != session_chan) return;
 
-        integer page  = llList2Integer(s,1);
+        integer page = llList2Integer(s, 1);
 
         /* NAVIGATION */
-        if(msg=="« Prev"){ showAnimMenu(av,page-1,chan); return; }
-        if(msg=="Next »"){ showAnimMenu(av,page+1,chan); return; }
-        if(msg=="Relax")
+        if (msg == "« Prev") { show_anim_menu(av, page - 1, chan); return; }
+        if (msg == "Next »") { show_anim_menu(av, page + 1, chan); return; }
+        if (msg == "Relax")
         {
-            if(gCurrentAnim != "") llStopAnimation(gCurrentAnim);
-            gCurrentAnim = "";
-            sClear(av);
+            if (g_current_anim != "") llStopAnimation(g_current_anim);
+            g_current_anim = "";
+            s_clear(av);
             return;
         }
 
-        /* actual animation buttons */
-        if(llListFindList(gAnimNames,[msg]) != -1)
+        /* Animation buttons */
+        if (llListFindList(g_anim_names, [msg]) != -1)
         {
-            playAnim(msg);
-            sClear(av);
+            play_anim(msg);
+            s_clear(av);
             return;
         }
     }
 
-    timer(){ timeoutCheck(); }
+    timer() { timeout_check(); }
 
-    /* request perms again if owner changes */
     changed(integer c)
     {
-        if(c & CHANGED_OWNER)
+        if (c & CHANGED_OWNER)
         {
-            gHavePerms = FALSE;
-            gCurrentAnim = "";
-            llRequestPermissions(llGetOwner(),PERMISSION_TRIGGER_ANIMATION);
+            g_have_perms = FALSE;
+            g_current_anim = "";
+            llRequestPermissions(llGetOwner(), PERMISSION_TRIGGER_ANIMATION);
         }
     }
 }
+/* =============================================================
+   BLOCK: MAIN EVENT LOOP END
+   ============================================================= */
