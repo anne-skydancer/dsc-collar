@@ -280,7 +280,8 @@ default
         if (llListFindList(g_anim_names, [msg]) != -1)
         {
             play_anim(msg);
-            s_clear(av);
+            // Redraw the menu to remain open after animation starts
+            show_anim_menu(av, page, chan);
             return;
         }
     }
