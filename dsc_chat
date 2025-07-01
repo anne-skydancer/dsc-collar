@@ -52,8 +52,8 @@ list s_get(key av) {
 /* =============================================================
    BLOCK: MENU DEFINITIONS BEGIN
    ============================================================= */
-list core_menu_buttons() { return [ "Change Prefix", "Toggle Public" ]; }
-list core_menu_ctxs()    { return [ "set_prefix", "toggle_public" ]; }
+list chat_menu_buttons() { return [ "Change Prefix", "Toggle Public" ]; }
+list chat_menu_ctxs()    { return [ "set_prefix", "toggle_public" ]; }
 
 show_chat_menu(key av, integer chan)
 {
@@ -64,21 +64,15 @@ show_chat_menu(key av, integer chan)
         return;
     }
     // Regular menu (with Back)
-    list btns = core_menu_buttons() + [ "Back" ];
+    list btns = chat_menu_buttons() + [ "Back" ];
     while (llGetListLength(btns) % 3 != 0) btns += " ";
-
     string public_status = "DISABLED";
     if (g_public_listener)
         public_status = "ENABLED";
-
-    // Save both buttons and their actions
-    list actions = core_menu_ctxs() + [ "back" ];
-
-    s_set(av, 0, llDumpList2String(btns, "|"),
+    s_set(av, 0, " ",
           llGetUnixTime() + dialog_timeout,
           "chat_main", "", "",
-          llDumpList2String(actions, "|"), chan);
-
+          llDumpList2String(chat_menu_ctxs() + [ "back" ], ","), chan);
     if (DEBUG)
         llOwnerSay("[Chat] show_chat_menu for " + (string)av + " chan=" + (string)chan + " btns=" + llDumpList2String(btns, ","));
     llDialog(av, "Chat Plugin Options:\nPrefix: " + g_prefix +
@@ -88,7 +82,7 @@ show_chat_menu(key av, integer chan)
 
 prompt_prefix_setup(key av, integer chan)
 {
-    s_set(av, 0, "",
+    s_set(av, 0, " ",
           llGetUnixTime() + dialog_timeout,
           "set_prefix", "", "", "", chan);
     llTextBox(av, "Enter a chat command prefix (2-5 letters):", chan);
@@ -128,7 +122,9 @@ disable_public_listener()
 
 enable_prefix_listener()
 {
-    if (g_prefix_listen_handle == -1 && g_prefix != "") {
+    // Always disable old listener before enabling new one
+    disable_prefix_listener();
+    if (g_prefix != "") {
         g_prefix_listen_handle = llListen(1, "", NULL_KEY, "");
         if (DEBUG) llOwnerSay("[Chat] Prefix listen on channel 1 ENABLED");
     }
@@ -143,6 +139,45 @@ disable_prefix_listener()
 }
 /* =============================================================
    BLOCK: PUBLIC LISTENER TOGGLE & PERMISSIONS END
+   ============================================================= */
+
+/* =============================================================
+   BLOCK: CHAT VERB HANDLING BEGIN
+   ============================================================= */
+list chat_verbs() { return [ "prefix", "pubchat" ]; }
+
+integer handle_chat_command(string cmd, key av, integer chan)
+{
+    // Only allow for owner for now (stub, can expand ACLs)
+    integer acl = get_acl(av);
+
+    if (cmd == "prefix")
+    {
+        prompt_prefix_setup(av, chan);
+        return TRUE;
+    }
+    else if (cmd == "pubchat")
+    {
+        // Show the toggle confirmation dialog (same as from the menu)
+        string status = "DISABLED";
+        if (g_public_listener) status = "ENABLED";
+        string dialog = "Public chat is currently " + status + ".\n\nDo you want to ";
+        if (g_public_listener) dialog += "disable";
+        else dialog += "enable";
+        dialog += " public chat listening?";
+        list buttons = [];
+        if (g_public_listener) buttons = [ "Disable", "Cancel" ];
+        else buttons = [ "Enable", "Cancel" ];
+        while (llGetListLength(buttons) % 3 != 0) buttons += " ";
+        s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "toggle_public_confirm", "", "", "", chan);
+        llDialog(av, dialog, buttons, chan);
+        return TRUE;
+    }
+    // Add more chat verbs as needed here
+    return FALSE;
+}
+/* =============================================================
+   BLOCK: CHAT VERB HANDLING END
    ============================================================= */
 
 /* =============================================================
@@ -213,26 +248,46 @@ default
 
     listen(integer chan, string name, key av, string msg)
     {
+        // Intercept chat on public or prefix channel
+        if ((chan == PUBLIC_CHANNEL || chan == 1) && g_prefix != "")
+        {
+            if (llGetSubString(msg, 0, llStringLength(g_prefix)-1) == g_prefix)
+            {
+                string arg = llStringTrim(llGetSubString(msg, llStringLength(g_prefix)+1, -1), STRING_TRIM);
+                // Match against known verbs (case insensitive)
+                list verbs = chat_verbs();
+                integer i;
+                for (i = 0; i < llGetListLength(verbs); ++i)
+                {
+                    if (llToLower(arg) == llToLower(llList2String(verbs, i)))
+                    {
+                        if (DEBUG) llOwnerSay("[Chat] chat verb detected: " + arg);
+                        handle_chat_command(llToLower(arg), av, chan);
+                        return;
+                    }
+                }
+            }
+        }
+
         list sess = s_get(av);
         if (llGetListLength(sess) == 0) return;
         integer session_chan = llList2Integer(sess, 8);
         if (chan != session_chan) return;
 
         string ctx = llList2String(sess, 4);
+        string menucsv = llList2String(sess, 7);
 
         // Main menu
         if (ctx == "chat_main")
         {
-            list btns    = llParseString2List(llList2String(sess, 2), ["|"], []);
-            list actions = llParseString2List(llList2String(sess, 7), ["|"], []);
-
-            integer btnidx = llListFindList(btns, [msg]);
+            list allowed = llParseString2List(menucsv, [","], []);
+            integer sel = llListFindList(allowed, [msg]);
             string action = "";
-            if (btnidx != -1 && btnidx < llGetListLength(actions))
-                action = llList2String(actions, btnidx);
+            if (sel != -1 && sel < llGetListLength(allowed))
+                action = llList2String(allowed, sel);
 
-            if (DEBUG) llOwnerSay("[DEBUG] chat_main menu click: '" + msg + "' (action: " + action + ")");
-            if (DEBUG) llOwnerSay("[DEBUG] allowed actions: " + llDumpList2String(actions, "|"));
+            if (DEBUG) llOwnerSay("[DEBUG] chat_main menu click: '" + msg + "'");
+            if (DEBUG) llOwnerSay("[DEBUG] allowed actions: " + llDumpList2String(allowed, "|"));
 
             if (action == "set_prefix")
             {
@@ -242,23 +297,15 @@ default
             if (action == "toggle_public")
             {
                 // Show confirmation dialog before toggling
-                string status;
-                if (g_public_listener)
-                    status = "ENABLED";
-                else
-                    status = "DISABLED";
-
+                string status = "DISABLED";
+                if (g_public_listener) status = "ENABLED";
                 string dialog = "Public chat is currently " + status + ".\n\nDo you want to ";
-                if (g_public_listener)
-                    dialog += "disable";
-                else
-                    dialog += "enable";
+                if (g_public_listener) dialog += "disable";
+                else dialog += "enable";
                 dialog += " public chat listening?";
-                list buttons;
-                if (g_public_listener)
-                    buttons = [ "Disable", "Cancel" ];
-                else
-                    buttons = [ "Enable", "Cancel" ];
+                list buttons = [];
+                if (g_public_listener) buttons = [ "Disable", "Cancel" ];
+                else buttons = [ "Enable", "Cancel" ];
                 while (llGetListLength(buttons) % 3 != 0) buttons += " ";
                 s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "toggle_public_confirm", "", "", "", chan);
                 llDialog(av, dialog, buttons, chan);
@@ -306,15 +353,15 @@ default
                 g_prefix = new_prefix;
                 llOwnerSay("Prefix set to: " + g_prefix);
 
-                enable_prefix_listener();
-                enable_public_listener(); // auto-enable public chat when prefix first set
+                enable_prefix_listener(); // Will always clear & set up a new listener
+                enable_public_listener(); // (if you want to auto-enable)
+
                 llDialog(av, "Prefix set to: " + g_prefix + "\n\nYou may now use public chat commands.", [ "OK" ], chan);
                 s_clear(av);
             }
             else
             {
                 llDialog(av, "Prefix must be 2-5 characters. Try again.", [ "OK" ], chan);
-                // Leave session open for retry, or call prompt_prefix_setup(av, chan);
             }
             return;
         }
