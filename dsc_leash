@@ -1,316 +1,284 @@
-// D/s Collar Leashing Plugin (Strict LSL, LeashRing anchor support)
-// Set your CHAIN_TEXTURE UUID before use!
+// =============================================================
+//  D/s Collar Leash Plugin – strict LSL, GUH conventions, leash mechanics
+//  Version: 2025-07-06  (menu, dialog, leash follow, particles, controls)
+// =============================================================
 
-integer DEBUG = TRUE;
-float   dialog_timeout = 180.0;
+integer debug = TRUE;
 
-// Leash state
-key     g_leasher          = NULL_KEY;  // Avatar key who holds the leash
-float   g_leash_length     = 2.0;       // Default length (meters)  // <-- CHANGED HERE
-integer g_rlv_enabled      = FALSE;     // RLV pull-teleport toggle
+/*──────── persistent state ────────*/
+integer g_leashed        = FALSE;
+key     g_leasher        = NULL_KEY;
+integer g_leash_length   = 2;     // 1–20 meters, default 2
+integer g_follow_mode    = FALSE;
+integer g_controls_ok    = FALSE;
+integer g_turn_to        = FALSE;
+vector  g_anchor         = ZERO_VECTOR;
+string  g_chain_texture  = "5c472de3-ac7e-d7d3-f26f-8c8f35987fd7"; // example chain
 
-string  CHAIN_TEXTURE      = "5c472de3-ac7e-d7d3-f26f-8c8f35987fd7"; // <-- set this inworld
-
+/*──────── session helpers ────────*/
 list    g_sessions;
-list    g_trustees         = [];
-key     g_owner            = NULL_KEY;
 
-// ===== SESSION HELPERS =====
-integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
-integer s_set(key av, integer page, string csv, float expiry, string ctx, string param, string step, string menucsv, integer chan)
+integer sidx(key av){ return llListFindList(g_sessions,[av]); }
+integer sset(key av,integer page,string csv,float exp,string ctx,string param,string step,string mcsv,integer chan)
 {
-    integer i = s_idx(av);
-    if (i != -1) {
-        integer old = llList2Integer(g_sessions, i+9);
-        if (old != -1) llListenRemove(old);
-        g_sessions = llDeleteSubList(g_sessions, i, i+9);
+    integer i = sidx(av);
+    if(~i){
+        integer old = llList2Integer(g_sessions,i+9);
+        if(old!=-1) llListenRemove(old);
+        g_sessions = llDeleteSubList(g_sessions,i,i+9);
     }
-    integer lh = llListen(chan, "", av, "");
-    g_sessions += [av,page,csv,expiry,ctx,param,step,menucsv,chan,lh];
+    integer lh = llListen(chan,"",av,"");
+    g_sessions += [av,page,csv,exp,ctx,param,step,mcsv,chan,lh];
     return TRUE;
 }
-integer s_clear(key av)
-{
-    integer i = s_idx(av);
-    if (i != -1) {
-        integer old = llList2Integer(g_sessions, i+9);
-        if (old != -1) llListenRemove(old);
-        g_sessions = llDeleteSubList(g_sessions, i, i+9);
+integer sclear(key av){
+    integer i = sidx(av);
+    if(~i){
+        integer old = llList2Integer(g_sessions,i+9);
+        if(old!=-1) llListenRemove(old);
+        g_sessions = llDeleteSubList(g_sessions,i,i+9);
     }
     return TRUE;
 }
-list s_get(key av)
-{
-    integer i = s_idx(av);
-    if (i != -1) return llList2List(g_sessions, i, i+9);
+list sget(key av){
+    integer i = sidx(av);
+    if(~i) return llList2List(g_sessions,i,i+9);
     return [];
 }
 
-// ===== ACL check =====
-integer get_acl(key av)
+/*──────── menu buttons ────────*/
+list leash_menu_btns(integer acl)
 {
-    if (g_owner == NULL_KEY) g_owner = llGetOwner();
-    if (av == g_owner) return 1; // Owner
-    if (~llListFindList(g_trustees, [av])) return 2; // Trustee
-    if (av == llGetOwner()) return 3; // Wearer (the owner of the object)
-    return 4; // Public
+    return ["Leash", "Unleash", "Set Length", "Follow", "Turn", "Unclip"];
 }
 
-// ===== Leash Anchor (LeashRing) =====
-vector get_leash_point()
+/*──────── leash anchor ────────*/
+vector leash_anchor_point()
 {
-    integer num = llGetNumberOfPrims();
-    integer n;
-    for (n = 2; n <= num; ++n) // skip root prim
+    integer nprims = llGetNumberOfPrims();
+    integer i;
+    for(i=2;i<=nprims;++i)
     {
-        string name = llGetLinkName(n);
-        string desc = llList2String(llGetLinkPrimitiveParams(n, [PRIM_DESC]), 0);
-        if (llToLower(name) == "leashring" || llToLower(desc) == "leash:ring")
+        string nm = llGetLinkName(i);
+        string desc = llList2String(llGetLinkPrimitiveParams(i,[PRIM_DESC]),0);
+        if(llToLower(nm) == "leashring" || llToLower(desc) == "leash:ring")
         {
-            vector child_local = llList2Vector(llGetLinkPrimitiveParams(n, [PRIM_POS_LOCAL]), 0);
+            vector child_local = llList2Vector(llGetLinkPrimitiveParams(i, [PRIM_POS_LOCAL]), 0);
             vector root_pos = llGetRootPosition();
             rotation root_rot = llGetRootRotation();
-            vector anchor = root_pos + (child_local * root_rot);
-            if (DEBUG) llOwnerSay("[Leashing] Found anchor at link #" + (string)n + ", pos=" + (string)anchor);
-            return anchor;
+            return root_pos + (child_local * root_rot);
         }
     }
-    // fallback to root prim position
-    if (DEBUG) llOwnerSay("[Leashing] No leashring found, using root");
     return llGetRootPosition();
 }
 
-// ===== Menu buttons =====
-list get_leash_menu_buttons(integer acl)
-{
-    if (acl == 1 || acl == 2)
-        return ["Leash", "Unleash", "Set Length", "RLV Toggle"];
-    else if (acl == 3)
-        return ["Offer Leash", "Set Length", "Unclip"];
-    else
-        return ["Leash", "Unleash"];
+/*──────── main menu ────────*/
+show_leash_menu(key av,integer chan){
+    integer acl = 4; // placeholder for public, can wire to GUH getacl if needed
+    list btns = leash_menu_btns(acl);
+    while(llGetListLength(btns)%3!=0) btns += [" "];
+    sset(av,0,"",llGetUnixTime()+180.0,"menu","","","",chan);
+
+    string st = "Leash state:\n";
+    if(g_leashed) st += "Leashed to: "+llKey2Name(g_leasher)+"\n";
+    else st += "Not leashed\n";
+    st += "Length: "+(string)g_leash_length+" m";
+    if(g_turn_to) st += "\nTurn: ON";
+    else st += "\nTurn: OFF";
+    llDialog(av,st,btns,chan);
 }
 
-show_leash_menu(key av, integer chan)
+/*──────── leash length dialog (vertical) ────────*/
+show_leash_length_menu(key av, integer chan)
 {
-    integer acl = get_acl(av);
-    list btns = get_leash_menu_buttons(acl);
-    while (llGetListLength(btns) % 3 != 0) btns += [" "]; // PAD TO MULTIPLE OF 3 with " "
-    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "leash_menu", "", "", llDumpList2String(btns, ","), chan);
-
-    string leasher_name = "<none>";
-    if (g_leasher != NULL_KEY) leasher_name = llKey2Name(g_leasher);
-    string rlv_status = "OFF";
-    if (g_rlv_enabled) rlv_status = "ON";
-
-    llDialog(av, "Leashing Plugin:\nLeasher: " + leasher_name +
-        "\nLength: " + (string)g_leash_length + "m\nRLV: " + rlv_status, btns, chan);
-
-    if (DEBUG) llOwnerSay("[Leashing] show_leash_menu for " + (string)av + " chan=" + (string)chan + " btns=" + llDumpList2String(btns, ","));
+    // "Back","OK","Cancel" on nav row (top), numbers go DOWN below nav row
+    list buttons = ["Back", "OK", "Cancel", "10", "15", "20", "1", "2", "5"];
+    sset(av, 0, "", llGetUnixTime() + 180.0, "set_length", "", "", "", chan);
+    string info = "Select leash length (meters):\nCurrent: " + (string)g_leash_length + " m";
+    llDialog(av, info, buttons, chan);
 }
 
-// ===== Timeout cleaning =====
-timeout_check()
+/*──────── leash visual particles ────────*/
+draw_leash_particles(key to)
 {
+    vector start = leash_anchor_point();
+    vector target = llGetRootPosition();
+    if(to != NULL_KEY && to != llGetOwner())
+    {
+        list det = llGetObjectDetails(to, [OBJECT_POS]);
+        if(llGetListLength(det)>0) target = llList2Vector(det, 0);
+    }
+    list psys = [
+        PSYS_SRC_PATTERN, PSYS_SRC_PATTERN_DROP,
+        PSYS_SRC_TEXTURE, g_chain_texture,
+        PSYS_SRC_BURST_RATE, 0.02,
+        PSYS_SRC_BURST_PART_COUNT, 1,
+        PSYS_PART_START_SCALE, <0.06,0.06,0>,
+        PSYS_PART_END_SCALE, <0.06,0.06,0>,
+        PSYS_PART_MAX_AGE, 1.2,
+        PSYS_PART_FLAGS, PSYS_PART_INTERP_COLOR_MASK | PSYS_PART_FOLLOW_SRC_MASK | PSYS_PART_TARGET_POS_MASK,
+        PSYS_SRC_TARGET_KEY, to,
+        PSYS_PART_START_COLOR, <1,1,1>,
+        PSYS_PART_END_COLOR, <1,1,1>
+    ];
+    llParticleSystem(psys);
+}
+
+stop_leash_particles()
+{
+    llParticleSystem([]);
+}
+
+/*──────── timeout check ────────*/
+timeout_check(){
     integer now = llGetUnixTime();
-    integer i = 0;
-    while (i < llGetListLength(g_sessions)) {
-        if (now > llList2Float(g_sessions, i+3)) {
-            key av = llList2Key(g_sessions, i);
-            llInstantMessage(av, "Leashing dialog timed out.");
-            s_clear(av);
-        } else i += 10;
+    integer i=0;
+    while(i<llGetListLength(g_sessions)){
+        if(now>llList2Float(g_sessions,i+3))
+             sclear(llList2Key(g_sessions,i));
+        else i += 10;
     }
 }
 
-// ===== Particle update =====
-update_leash_particles()
+/*──────── leash logic: keep wearer in leash range ────────*/
+leash_follow_logic()
 {
-    if (g_leasher != NULL_KEY)
+    if(!g_leashed || g_leasher == NULL_KEY) return;
+
+    key wearer = llGetOwner();
+    key leasher = g_leasher;
+    vector wearer_pos = llGetRootPosition();
+    vector anchor = leash_anchor_point();
+    vector leash_point = anchor;
+
+    if(leasher != wearer)
     {
-        vector leash_start = get_leash_point();
-        vector wearer = llGetRootPosition();
-        key leasher = g_leasher;
+        list det = llGetObjectDetails(leasher,[OBJECT_POS]);
+        if(llGetListLength(det)>0)
+            leash_point = llList2Vector(det,0);
+    }
 
-        vector target = wearer; // fallback
+    float max_len = (float)g_leash_length;
+    vector offset = wearer_pos - leash_point;
+    float dist = llVecMag(offset);
 
-        if (llKey2Name(leasher) != "")
+    if(dist > max_len)
+    {
+        // leash vector enforcement
+        if(g_controls_ok)
         {
-            list det = llGetObjectDetails(leasher, [OBJECT_POS]);
-            if (llGetListLength(det) > 0) target = llList2Vector(det, 0);
+            vector tgt = leash_point + llVecNorm(offset) * max_len * 0.98;
+            llMoveToTarget(tgt, 0.5);
+            if(g_turn_to)
+            {
+                vector v = leash_point - wearer_pos;
+                float angle = llAtan2(v.x, v.y);
+                // Needs RLV for forced rotation in real use
+                // Here, could only face or send a debug
+            }
         }
-
-        if (DEBUG) llOwnerSay("[Leashing] Drawing leash from " + (string)leash_start + " to " + (string)target);
-
-        list psys = [
-            PSYS_SRC_PATTERN, PSYS_SRC_PATTERN_DROP,
-            PSYS_SRC_TEXTURE, CHAIN_TEXTURE,
-            PSYS_SRC_BURST_RATE, 0.02,
-            PSYS_SRC_BURST_PART_COUNT, 1,
-            PSYS_PART_START_SCALE, <0.05,0.05,0>,
-            PSYS_PART_END_SCALE, <0.05,0.05,0>,
-            PSYS_PART_MAX_AGE, 1.0,
-            PSYS_PART_FLAGS, PSYS_PART_INTERP_COLOR_MASK | PSYS_PART_FOLLOW_SRC_MASK | PSYS_PART_TARGET_POS_MASK,
-            PSYS_SRC_TARGET_KEY, leasher,
-            PSYS_PART_START_COLOR, <1,1,1>,
-            PSYS_PART_END_COLOR, <1,1,1>
-        ];
-        llParticleSystem(psys);
+        // Optionally, RLV tether restriction goes here
     }
-    else
-    {
-        llParticleSystem([]);
-    }
+    draw_leash_particles(leasher);
 }
 
-// ===== Main state =====
+/*──────── default state ────────*/
 default
 {
-    state_entry()
-    {
-        llMessageLinked(LINK_THIS, 500, "register|1004|Leashing|4|leashing", NULL_KEY);
-        llSetTimerEvent(1.0);
-        if (DEBUG) llOwnerSay("[Leashing] state_entry");
-        g_owner = llGetOwner();
-        llSetTimerEvent(0.0);
+    state_entry(){
+        if(debug) llOwnerSay("[leash] Ready.");
+        llMessageLinked(LINK_THIS,500,"register|1003|leash|4|leash",NULL_KEY);
+        llRequestPermissions(llGetOwner(), PERMISSION_TAKE_CONTROLS);
+        llSetTimerEvent(0.4);
     }
 
-    link_message(integer sender, integer num, string str, key id)
+    run_time_permissions(integer perm)
     {
-        if (num == 510) {
+        if(perm & PERMISSION_TAKE_CONTROLS) g_controls_ok = TRUE;
+        else g_controls_ok = FALSE;
+    }
+
+    link_message(integer sn,integer num,string str,key id)
+    {
+        if(num == 510)
+        {
+            // "leash|<avatar>|<chan>"
             list a = llParseString2List(str, ["|"], []);
-            if (llGetListLength(a) >= 3 && llList2String(a,0) == "leashing") {
-                key av   = (key) llList2String(a,1);
-                integer chan = (integer) llList2String(a,2);
+            if(llList2String(a,0) == "leash" && llGetListLength(a) >= 3)
+            {
+                key av   = (key)llList2String(a, 1);
+                integer chan = (integer)llList2String(a, 2);
                 show_leash_menu(av, chan);
             }
         }
     }
 
-    listen(integer chan, string name, key av, string msg)
+    listen(integer chan, string nm, key av, string msg)
     {
-        list sess = s_get(av);
-        if (llGetListLength(sess) == 0) return;
-        if (chan != llList2Integer(sess,8)) return;
-        string ctx = llList2String(sess,4);
-        string menucsv = llList2String(sess,7);
+        list s = sget(av);
+        if(llGetListLength(s)==0) return;
+        if(chan!=llList2Integer(s,8)) return;
 
-        integer acl = get_acl(av);
+        string ctx = llList2String(s,4);
 
-        if (ctx == "leash_menu") {
-            list allowed = llParseString2List(menucsv, [","], []);
-            integer sel = llListFindList(allowed, [msg]);
-            if (sel == -1) return;
-            string action = llList2String(allowed, sel);
-
-            // OWNER/TRUSTEE
-            if ((acl == 1 || acl == 2) && action == "Leash") {
-                llSensor("", NULL_KEY, AGENT, 5.0, TWO_PI);
-                s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "leash_select", "", "", "", chan);
-                return;
-            }
-            if ((acl == 1 || acl == 2) && action == "Unleash") {
-                g_leasher = NULL_KEY;
-                llParticleSystem([]);
-                llDialog(av, "Leash released.", ["OK"], chan);
-                s_clear(av);
-                return;
-            }
-            if ((acl == 1 || acl == 2) && action == "Set Length") {
-                list lens = [];
-                integer i;
-                for (i = 2; i <= 20; i++) lens += (string)i;
-                while (llGetListLength(lens) % 3 != 0) lens += " ";
-                s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "set_length", "", "", llDumpList2String(lens, ","), chan);
-                llDialog(av, "Select leash length (meters):", lens, chan);
-                return;
-            }
-            if ((acl == 1 || acl == 2) && action == "RLV Toggle") {
-                if (g_rlv_enabled) g_rlv_enabled = FALSE;
-                else g_rlv_enabled = TRUE;
-                string rlv_status = "OFF";
-                if (g_rlv_enabled) rlv_status = "ON";
-                llDialog(av, "RLV is now " + rlv_status + ".", ["OK"], chan);
-                s_clear(av);
-                return;
-            }
-            // WEARER
-            if (acl == 3 && action == "Offer Leash") {
-                llSensor("", NULL_KEY, AGENT, 5.0, TWO_PI);
-                s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "offer_leash", "", "", "", chan);
-                return;
-            }
-            if (acl == 3 && action == "Set Length") {
-                list lens = [];
-                integer i;
-                for (i = 2; i <= 20; i++) lens += (string)i;
-                while (llGetListLength(lens) % 3 != 0) lens += " ";
-                s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "set_length", "", "", llDumpList2String(lens, ","), chan);
-                llDialog(av, "Select leash length (meters):", lens, chan);
-                return;
-            }
-            if (acl == 3 && action == "Unclip") {
-                g_leasher = NULL_KEY;
-                llParticleSystem([]);
-                llDialog(av, "Leash unclipped.", ["OK"], chan);
-                s_clear(av);
-                return;
-            }
-            // PUBLIC
-            if (acl == 4 && action == "Leash") {
-                g_leasher = av;
-                llDialog(av, "You have leashed the wearer.", ["OK"], chan);
-                s_clear(av);
-                return;
-            }
-            if (acl == 4 && action == "Unleash") {
-                g_leasher = NULL_KEY;
-                llParticleSystem([]);
-                llDialog(av, "Leash released.", ["OK"], chan);
-                s_clear(av);
-                return;
-            }
-        }
-
-        if (ctx == "set_length") {
-            integer newlen = (integer)msg;
-            if (newlen >= 2 && newlen <= 20) {
-                g_leash_length = (float)newlen;
-                llDialog(av, "Leash length set to " + (string)newlen + " meters.", ["OK"], chan);
-                s_clear(av);
-            }
-            return;
-        }
-        // Owner/trustee: select agent to leash (sensor)
-        if (ctx == "leash_select" || ctx == "offer_leash") {
-            // sensor event will handle
-        }
-    }
-
-    sensor(integer n)
-    {
-        list sess = g_sessions;
-        integer i;
-        for (i = 0; i < llGetListLength(sess); i += 10)
+        if(ctx == "menu")
         {
-            string ctx = llList2String(sess, i+4);
-            key av = llList2Key(sess, i);
-            integer chan = llList2Integer(sess, i+8);
-            if ((ctx == "leash_select" || ctx == "offer_leash") && n > 0) {
-                g_leasher = llDetectedKey(0);
-                llDialog(av, "Leash clipped to " + llDetectedName(0) + ".", ["OK"], chan);
-                s_clear(av);
+            if(msg == "Leash"){
+                g_leashed = TRUE;
+                g_leasher = av;
+                llOwnerSay("[leash] "+llKey2Name(av)+" leashed you.");
+                sclear(av);
+                return;
+            }
+            if(msg == "Unleash"){
+                g_leashed = FALSE;
+                g_leasher = NULL_KEY;
+                stop_leash_particles();
+                llOwnerSay("[leash] Leash released.");
+                sclear(av);
+                return;
+            }
+            if(msg == "Set Length"){
+                show_leash_length_menu(av, chan);
+                return;
+            }
+            if(msg == "Turn"){
+                g_turn_to = !g_turn_to;
+                show_leash_menu(av, chan);
+                return;
+            }
+            if(msg == "Unclip"){
+                g_leashed = FALSE;
+                g_leasher = NULL_KEY;
+                stop_leash_particles();
+                llOwnerSay("[leash] Unclipped.");
+                sclear(av);
+                return;
+            }
+            // "Follow" logic here (can toggle g_follow_mode, etc)
+        }
+
+        if(ctx == "set_length")
+        {
+            if(msg == "Back")   { show_leash_menu(av, chan); return; }
+            if(msg == "Cancel") { sclear(av); return; }
+            if(msg == "OK")     { sclear(av); return; }
+            if(msg == "1" || msg == "2" || msg == "5" || msg == "10" || msg == "15" || msg == "20")
+            {
+                g_leash_length = (integer)msg;
+                llOwnerSay("Leash length set to " + msg + " meters.");
+                sclear(av);
+                return;
             }
         }
-    }
-    no_sensor()
-    {
-        llParticleSystem([]);
     }
 
     timer()
     {
         timeout_check();
-        update_leash_particles();
+        if(g_leashed)
+            leash_follow_logic();
+        else
+            stop_leash_particles();
     }
 }
