@@ -9,7 +9,7 @@ key     g_leasher          = NULL_KEY;  // Avatar key who holds the leash
 float   g_leash_length     = 2.0;       // Default length (meters)  // <-- CHANGED HERE
 integer g_rlv_enabled      = FALSE;     // RLV pull-teleport toggle
 
-string  CHAIN_TEXTURE      = "<REPLACE_WITH_TEXTURE_KEY>"; // <-- set this inworld
+string  CHAIN_TEXTURE      = "5c472de3-ac7e-d7d3-f26f-8c8f35987fd7"; // <-- set this inworld
 
 list    g_sessions;
 list    g_trustees         = [];
@@ -168,11 +168,11 @@ default
 {
     state_entry()
     {
-        llSetTimerEvent(0.0); // stop timer for clean reg, then start
         llMessageLinked(LINK_THIS, 500, "register|1004|Leashing|4|leashing", NULL_KEY);
         llSetTimerEvent(1.0);
         if (DEBUG) llOwnerSay("[Leashing] state_entry");
         g_owner = llGetOwner();
+        llSetTimerEvent(0.0);
     }
 
     link_message(integer sender, integer num, string str, key id)
