@@ -13,7 +13,7 @@ integer g_follow_mode    = TRUE;  // Always on
 integer g_controls_ok    = FALSE;
 integer g_turn_to        = FALSE;
 vector  g_anchor         = ZERO_VECTOR;
-string  g_chain_texture  = "5c472de3-ac7e-d7d3-f26f-8c8f35987fd7"; // example chain
+string  g_chain_texture  = "4d3b6c6f-52e2-da9d-f7be-cccb1e535aca"; // example chain
 
 // --- GUH ACL state (live, synced from core) ---
 key    g_owner = NULL_KEY;
@@ -138,26 +138,38 @@ show_leash_length_menu(key av, integer chan)
 /*──────── leash visual particles ────────*/
 draw_leash_particles(key to)
 {
-    vector start = leash_anchor_point();
-    vector target = llGetRootPosition();
-    if(to != NULL_KEY && to != llGetOwner())
-    {
-        list det = llGetObjectDetails(to, [OBJECT_POS]);
-        if(llGetListLength(det)>0) target = llList2Vector(det, 0);
-    }
+    // Settings for realistic ribbon leash
+    vector leash_size = <0.07, 0.07, 0>;     // Slightly thicker ribbon
+    vector leash_color = <1.0, 1.0, 1.0>;    // White, adjust for tinted chains
+    float gravity = -1.25;                   // Sag strength (lower = more droop)
+    float part_age = 2.6;                    // Longer life for smooth arc
+    float burst_rate = 0.00;                 // As fast as allowed
+    integer part_flags = PSYS_PART_INTERP_COLOR_MASK
+                      | PSYS_PART_FOLLOW_SRC_MASK
+                      | PSYS_PART_TARGET_POS_MASK
+                      | PSYS_PART_FOLLOW_VELOCITY_MASK
+                      | PSYS_PART_RIBBON_MASK;  // <-- RIBBON MODE
+
+    // Use your leash texture UUID here (must be full-perm and present in prim)
+    string leash_tex = g_chain_texture;
+
+    if (to == NULL_KEY) { llParticleSystem([]); return; }
+
     list psys = [
         PSYS_SRC_PATTERN, PSYS_SRC_PATTERN_DROP,
-        PSYS_SRC_TEXTURE, g_chain_texture,
-        PSYS_SRC_BURST_RATE, 0.02,
+        PSYS_SRC_TEXTURE, leash_tex,
+        PSYS_SRC_BURST_RATE, burst_rate,
         PSYS_SRC_BURST_PART_COUNT, 1,
-        PSYS_PART_START_SCALE, <0.06,0.06,0>,
-        PSYS_PART_END_SCALE, <0.06,0.06,0>,
-        PSYS_PART_MAX_AGE, 1.2,
-        PSYS_PART_FLAGS, PSYS_PART_INTERP_COLOR_MASK | PSYS_PART_FOLLOW_SRC_MASK | PSYS_PART_TARGET_POS_MASK,
-        PSYS_SRC_TARGET_KEY, to,
-        PSYS_PART_START_COLOR, <1,1,1>,
-        PSYS_PART_END_COLOR, <1,1,1>
+        PSYS_PART_MAX_AGE, part_age,
+        PSYS_PART_START_SCALE, leash_size,
+        PSYS_PART_END_SCALE, leash_size,
+        PSYS_PART_START_COLOR, leash_color,
+        PSYS_PART_END_COLOR, leash_color,
+        PSYS_SRC_ACCEL, <0,0,gravity>,
+        PSYS_PART_FLAGS, part_flags,
+        PSYS_SRC_TARGET_KEY, to
     ];
+
     llParticleSystem(psys);
 }
 
