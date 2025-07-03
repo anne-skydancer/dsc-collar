@@ -1,6 +1,6 @@
 // =============================================================
-//  D/s Collar Leash Plugin – strict LSL, GUH conventions, leash mechanics
-//  Version: 2025-07-06  (menu, dialog, leash follow, particles, controls)
+//  D/s Collar Leashing Plugin – strict LSL, GUH conventions, ACLs
+//  Version: 2025-07-07  (GUH ACL sync, menu caps, core mechanics preserved)
 // =============================================================
 
 integer debug = TRUE;
@@ -9,11 +9,17 @@ integer debug = TRUE;
 integer g_leashed        = FALSE;
 key     g_leasher        = NULL_KEY;
 integer g_leash_length   = 2;     // 1–20 meters, default 2
-integer g_follow_mode    = FALSE;
+integer g_follow_mode    = TRUE;  // Always on
 integer g_controls_ok    = FALSE;
 integer g_turn_to        = FALSE;
 vector  g_anchor         = ZERO_VECTOR;
 string  g_chain_texture  = "5c472de3-ac7e-d7d3-f26f-8c8f35987fd7"; // example chain
+
+// --- GUH ACL state (live, synced from core) ---
+key    g_owner = NULL_KEY;
+list   g_trustees = [];
+list   g_blacklist = [];
+integer g_public_access = FALSE;
 
 /*──────── session helpers ────────*/
 list    g_sessions;
@@ -46,10 +52,42 @@ list sget(key av){
     return [];
 }
 
-/*──────── menu buttons ────────*/
+/*──────── ACL helpers (live, from GUH) ────────*/
+integer get_acl(key av)
+{
+    if(llListFindList(g_blacklist, [av]) != -1) return 6; // Blacklist
+    if(av == g_owner) return 1;                // Owner
+    if(av == llGetOwner()){
+        if(g_owner == NULL_KEY) return 1;
+        return 3;                              // Owned wearer
+    }
+    if(llListFindList(g_trustees, [av]) != -1) return 2;  // Trustee
+    if(g_public_access == TRUE) return 4;                 // Public
+    return 5;                                             // No access
+}
+
+/*──────── menu buttons by ACL ────────*/
 list leash_menu_btns(integer acl)
 {
-    return ["Leash", "Unleash", "Set Length", "Follow", "Turn", "Unclip"];
+    list btns = [];
+    if(acl == 1) // LV1: owner
+    {
+        btns += ["Leash", "Unleash", "Set Length", "Turn", "Unclip", "Pass Leash"];
+    }
+    else if(acl == 2) // LV2: trustee
+    {
+        btns += ["Leash", "Unleash", "Set Length", "Unclip", "Pass Leash"];
+    }
+    else if(acl == 3) // LV3: wearer
+    {
+        btns += ["Unclip", "Give Leash"];
+    }
+    else if(acl == 4) // LV4: public
+    {
+        btns += ["Leash", "Unleash"];
+    }
+    while(llGetListLength(btns)%3!=0) btns += [" "];
+    return btns;
 }
 
 /*──────── leash anchor ────────*/
@@ -74,9 +112,8 @@ vector leash_anchor_point()
 
 /*──────── main menu ────────*/
 show_leash_menu(key av,integer chan){
-    integer acl = 4; // placeholder for public, can wire to GUH getacl if needed
+    integer acl = get_acl(av);
     list btns = leash_menu_btns(acl);
-    while(llGetListLength(btns)%3!=0) btns += [" "];
     sset(av,0,"",llGetUnixTime()+180.0,"menu","","","",chan);
 
     string st = "Leash state:\n";
@@ -164,7 +201,6 @@ leash_follow_logic()
 
     if(dist > max_len)
     {
-        // leash vector enforcement
         if(g_controls_ok)
         {
             vector tgt = leash_point + llVecNorm(offset) * max_len * 0.98;
@@ -173,11 +209,9 @@ leash_follow_logic()
             {
                 vector v = leash_point - wearer_pos;
                 float angle = llAtan2(v.x, v.y);
-                // Needs RLV for forced rotation in real use
-                // Here, could only face or send a debug
+                // Optionally add turn-to logic here (RLV, message, etc)
             }
         }
-        // Optionally, RLV tether restriction goes here
     }
     draw_leash_particles(leasher);
 }
@@ -187,7 +221,7 @@ default
 {
     state_entry(){
         if(debug) llOwnerSay("[leash] Ready.");
-        llMessageLinked(LINK_THIS,500,"register|1003|leash|4|leash",NULL_KEY);
+        llMessageLinked(LINK_THIS,500,"register|1004|Leashing|4|leash",NULL_KEY);
         llRequestPermissions(llGetOwner(), PERMISSION_TAKE_CONTROLS);
         llSetTimerEvent(0.4);
     }
@@ -202,13 +236,31 @@ default
     {
         if(num == 510)
         {
-            // "leash|<avatar>|<chan>"
             list a = llParseString2List(str, ["|"], []);
             if(llList2String(a,0) == "leash" && llGetListLength(a) >= 3)
             {
                 key av   = (key)llList2String(a, 1);
                 integer chan = (integer)llList2String(a, 2);
                 show_leash_menu(av, chan);
+            }
+        }
+        // --- ACL state sync from GUH/Access plugin:
+        if(num == 520)
+        {
+            list p = llParseString2List(str, ["|"], []);
+            if(llGetListLength(p) == 8 && llList2String(p,0) == "state_sync")
+            {
+                g_owner = (key)llList2String(p,1);
+                string trust_csv = llList2String(p,3);
+                string bl_csv = llList2String(p,5);
+                string pub_str = llList2String(p,6);
+
+                if(trust_csv == " ") g_trustees = [];
+                else g_trustees = llParseString2List(trust_csv, [","], []);
+                if(bl_csv == " ") g_blacklist = [];
+                else g_blacklist = llParseString2List(bl_csv, [","], []);
+                if(pub_str == "1") g_public_access = TRUE;
+                else g_public_access = FALSE;
             }
         }
     }
@@ -223,39 +275,65 @@ default
 
         if(ctx == "menu")
         {
+            integer acl = get_acl(av);
             if(msg == "Leash"){
-                g_leashed = TRUE;
-                g_leasher = av;
-                llOwnerSay("[leash] "+llKey2Name(av)+" leashed you.");
-                sclear(av);
+                if(acl==1 || acl==2 || acl==4){
+                    g_leashed = TRUE;
+                    g_leasher = av;
+                    llOwnerSay("[leash] "+llKey2Name(av)+" leashed you.");
+                    sclear(av);
+                }
                 return;
             }
             if(msg == "Unleash"){
-                g_leashed = FALSE;
-                g_leasher = NULL_KEY;
-                stop_leash_particles();
-                llOwnerSay("[leash] Leash released.");
-                sclear(av);
+                if(acl==1 || acl==2 || acl==4){
+                    g_leashed = FALSE;
+                    g_leasher = NULL_KEY;
+                    stop_leash_particles();
+                    llOwnerSay("[leash] Leash released.");
+                    sclear(av);
+                }
                 return;
             }
             if(msg == "Set Length"){
-                show_leash_length_menu(av, chan);
+                if(acl==1 || acl==2){
+                    show_leash_length_menu(av, chan);
+                }
                 return;
             }
             if(msg == "Turn"){
-                g_turn_to = !g_turn_to;
-                show_leash_menu(av, chan);
+                if(acl==1){
+                    g_turn_to = !g_turn_to;
+                    show_leash_menu(av, chan);
+                }
                 return;
             }
             if(msg == "Unclip"){
-                g_leashed = FALSE;
-                g_leasher = NULL_KEY;
-                stop_leash_particles();
-                llOwnerSay("[leash] Unclipped.");
-                sclear(av);
+                if(acl==3){
+                    g_leashed = FALSE;
+                    g_leasher = NULL_KEY;
+                    stop_leash_particles();
+                    llOwnerSay("[leash] Unclipped.");
+                    sclear(av);
+                }
                 return;
             }
-            // "Follow" logic here (can toggle g_follow_mode, etc)
+            if(msg == "Give Leash"){
+                if(acl==3){
+                    // To be implemented: Scan for nearby avs and offer leash
+                    llOwnerSay("[leash] Give Leash (to nearby agent, not yet implemented)");
+                    sclear(av);
+                }
+                return;
+            }
+            if(msg == "Pass Leash"){
+                if(acl==1 || acl==2){
+                    // To be implemented: Scan for nearby avs and pass leash
+                    llOwnerSay("[leash] Pass Leash (to nearby agent, not yet implemented)");
+                    sclear(av);
+                }
+                return;
+            }
         }
 
         if(ctx == "set_length")
