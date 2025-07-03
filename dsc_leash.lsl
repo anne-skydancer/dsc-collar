@@ -1,6 +1,6 @@
 // =============================================================
 //  D/s Collar Leashing Plugin – strict LSL, GUH conventions, ACLs
-//  Version: 2025-07-07  (GUH ACL sync, menu caps, core mechanics preserved)
+//  Version: 2025-07-08  (ACLs, GUH sync, NO nav row/buttons, Unclip only for LV3)
 // =============================================================
 
 integer debug = TRUE;
@@ -55,7 +55,7 @@ list sget(key av){
 /*──────── ACL helpers (live, from GUH) ────────*/
 integer get_acl(key av)
 {
-    if(llListFindList(g_blacklist, [av]) != -1) return 6; // Blacklist
+    if(llListFindList(g_blacklist, [av]) != -1) return 5; // Blacklist
     if(av == g_owner) return 1;                // Owner
     if(av == llGetOwner()){
         if(g_owner == NULL_KEY) return 1;
@@ -72,11 +72,11 @@ list leash_menu_btns(integer acl)
     list btns = [];
     if(acl == 1) // LV1: owner
     {
-        btns += ["Leash", "Unleash", "Set Length", "Turn", "Unclip", "Pass Leash"];
+        btns += ["Leash", "Unleash", "Set Length", "Turn", "Pass Leash"];
     }
     else if(acl == 2) // LV2: trustee
     {
-        btns += ["Leash", "Unleash", "Set Length", "Unclip", "Pass Leash"];
+        btns += ["Leash", "Unleash", "Set Length", "Pass Leash"];
     }
     else if(acl == 3) // LV3: wearer
     {
@@ -129,7 +129,7 @@ show_leash_menu(key av,integer chan){
 show_leash_length_menu(key av, integer chan)
 {
     // "Back","OK","Cancel" on nav row (top), numbers go DOWN below nav row
-    list buttons = ["Back", "OK", "Cancel", "10", "15", "20", "1", "2", "5"];
+    list buttons = ["10", "15", "20", "1", "2", "5"];
     sset(av, 0, "", llGetUnixTime() + 180.0, "set_length", "", "", "", chan);
     string info = "Select leash length (meters):\nCurrent: " + (string)g_leash_length + " m";
     llDialog(av, info, buttons, chan);
@@ -222,8 +222,8 @@ default
     state_entry(){
         if(debug) llOwnerSay("[leash] Ready.");
         llMessageLinked(LINK_THIS,500,"register|1004|Leashing|4|leash",NULL_KEY);
+        llSetTimerEvent(1.0);
         llRequestPermissions(llGetOwner(), PERMISSION_TAKE_CONTROLS);
-        llSetTimerEvent(0.4);
     }
 
     run_time_permissions(integer perm)
@@ -338,9 +338,6 @@ default
 
         if(ctx == "set_length")
         {
-            if(msg == "Back")   { show_leash_menu(av, chan); return; }
-            if(msg == "Cancel") { sclear(av); return; }
-            if(msg == "OK")     { sclear(av); return; }
             if(msg == "1" || msg == "2" || msg == "5" || msg == "10" || msg == "15" || msg == "20")
             {
                 g_leash_length = (integer)msg;
