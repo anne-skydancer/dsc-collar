@@ -4,9 +4,16 @@
    REVISION: 2025-07-06
    ============================================================= */
 
-   /* ==========================================================
+/* =============================================================
    BLOCK: GLOBAL VARIABLES & CONFIG BEGIN
    ============================================================= */
+/*
+    Chat Plugin (Strict LSL, 2025-07-06)
+    - Handles prefix management and public chat listening.
+    - Registers itself as a plugin with the GUH core.
+    - Consistent session handling as in other GUH scripts.
+*/
+
 integer DEBUG = TRUE;
 float   dialog_timeout     = 180.0;
 
@@ -216,7 +223,7 @@ default
     {
         if (DEBUG) llOwnerSay("[Chat] state_entry");
         llSetTimerEvent(1.0);
-        llMessageLinked(LINK_THIS, 500, "register|1003|Chat|3|chat", NULL_KEY);
+        llMessageLinked(LINK_THIS, 500, "register|1003|Chat|3|core_chat", NULL_KEY);
         // On start, disable both listeners; they get enabled on prefix set and/or menu
         disable_public_listener();
         disable_prefix_listener();
