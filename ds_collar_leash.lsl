@@ -13,6 +13,9 @@ integer g_follow_mode    = TRUE;  // Always on
 integer g_controls_ok    = FALSE;
 integer g_turn_to        = FALSE;
 vector  g_anchor         = ZERO_VECTOR;
+integer lg_channel       = -9119; // lockguard
+integer lm_channel       = -8888; // lockmeister
+key     g_lg_anchor      = NULL_KEY; // current lockguard anchor (object/avatar)
 string  g_chain_texture  = "4d3b6c6f-52e2-da9d-f7be-cccb1e535aca"; // example chain
 
 // --- GUH ACL state (live, synced from core) ---
@@ -234,6 +237,8 @@ leash_follow_logic()
 default
 {
     state_entry(){
+        llListen(lg_channel, "", NULL_KEY, "");
+        llListen(lm_channel, "", NULL_KEY, "");
         if(debug) llOwnerSay("[leash] Ready.");
         llMessageLinked(LINK_THIS,500,"register|1004|Leashing|4|leash",NULL_KEY);
         llSetTimerEvent(1.0);
@@ -297,61 +302,61 @@ default
                     llOwnerSay("[leash] "+llKey2Name(av)+" leashed you.");
                     sclear(av);
                 }
-                return;
+            return;
+        }
+        if(msg == "Unleash"){
+            if(acl==1 || acl==2 || acl==4){
+                g_leashed = FALSE;
+                g_leasher = NULL_KEY;
+                stop_leash_particles();
+                llStopMoveToTarget();
+                llStopLookAt();
+                llOwnerSay("[leash] Leash released.");
+                sclear(av);
             }
-            if(msg == "Unleash"){
-                if(acl==1 || acl==2 || acl==4){
-                    g_leashed = FALSE;
-                    g_leasher = NULL_KEY;
-                    stop_leash_particles();
-                    llStopMoveToTarget();
-                    llStopLookAt();
-                    llOwnerSay("[leash] Leash released.");
-                    sclear(av);
+            return;
+        }
+        if(msg == "Set Length"){
+            if(acl==1 || acl==2){
+                show_leash_length_menu(av, chan);
                 }
-                return;
+            return;
+        }
+        if(msg == "Turn"){
+            if(acl==1){
+                g_turn_to = !g_turn_to;
+                show_leash_menu(av, chan);
             }
-            if(msg == "Set Length"){
-                if(acl==1 || acl==2){
-                    show_leash_length_menu(av, chan);
+            return;
+        }
+        if(msg == "Unclip"){
+            if(acl==3){
+                g_leashed = FALSE;
+                g_leasher = NULL_KEY;
+                stop_leash_particles();
+                llStopMoveToTarget();
+                llStopLookAt();
+                llOwnerSay("[leash] Unclipped.");
+                sclear(av);
+            }
+            return;
+        }
+        if(msg == "Give Leash"){
+            if(acl==3){
+                // To be implemented: Scan for nearby avs and offer leash
+                llOwnerSay("[leash] Give Leash (to nearby agent, not yet implemented)");
+                sclear(av);
                 }
-                return;
-            }
-            if(msg == "Turn"){
-                if(acl==1){
-                    g_turn_to = !g_turn_to;
-                    show_leash_menu(av, chan);
-                }
-                return;
-            }
-            if(msg == "Unclip"){
-                if(acl==3){
-                    g_leashed = FALSE;
-                    g_leasher = NULL_KEY;
-                    stop_leash_particles();
-                    llStopMoveToTarget();
-                    llStopLookAt();
-                    llOwnerSay("[leash] Unclipped.");
-                    sclear(av);
-                }
-                return;
-            }
-            if(msg == "Give Leash"){
-                if(acl==3){
-                    // To be implemented: Scan for nearby avs and offer leash
-                    llOwnerSay("[leash] Give Leash (to nearby agent, not yet implemented)");
-                    sclear(av);
-                }
-                return;
-            }
-            if(msg == "Pass Leash"){
-                if(acl==1 || acl==2){
-                    // To be implemented: Scan for nearby avs and pass leash
+            return;
+        }
+        if(msg == "Pass Leash"){
+               if(acl==1 || acl==2){
+                     // To be implemented: Scan for nearby avs and pass leash
                     llOwnerSay("[leash] Pass Leash (to nearby agent, not yet implemented)");
-                    sclear(av);
-                }
-                return;
-            }
+                   sclear(av);
+                    }
+               return;
+               }
         }
 
         if(ctx == "set_length")
@@ -364,7 +369,54 @@ default
                 return;
             }
         }
-    }
+
+        // --- lockguard leash integration ---
+        if (chan == lg_channel)
+        {
+            list parts = llParseString2List(msg, [" "], []);
+            if (llGetListLength(parts) >= 4 && llList2String(parts, 0) == "lockguard")
+                {
+                    key target_av = llList2Key(parts, 1);
+                    string point = llList2String(parts, 2);
+                    string cmd = llList2String(parts, 3);
+                    if (target_av == llGetOwner())
+                    {
+                        if (cmd == "link" && llGetListLength(parts) >= 5)
+                        {
+                            key anchor = llList2Key(parts, 4);
+                            g_leashed = TRUE;
+                            g_leasher = anchor;
+                            g_lg_anchor = anchor;
+                            llOwnerSay("[leash] leashed via lockguard to: " + (string)anchor);
+                        }
+                        else if (cmd == "unlink")
+                        {
+                            g_leashed = FALSE;
+                            g_leasher = NULL_KEY;
+                            g_lg_anchor = NULL_KEY;
+                            stop_leash_particles();
+                            llStopMoveToTarget();
+                            llStopLookAt();
+                            llOwnerSay("[leash] unleashed via lockguard.");
+                        }
+                    }
+                }
+            }
+
+            // --- lockmeister integration (simple reply) ---
+            if (chan == lm_channel)
+             {
+                list parts = llParseString2List(msg, ["|"], []);
+                if (llGetListLength(parts) >= 4 && llList2String(parts, 1) == "LMV2" && llList2String(parts, 2) == "RequestPoint")
+                    {
+                    string point = llList2String(parts, 3);
+                    if (point == "collar")
+                    {
+                        llRegionSayTo(av, lm_channel, (string)llGetOwner() + "|LMV2|ReplyPoint|collar|" + (string)llGetKey());
+                    }
+                }
+            }
+        }
 
     timer()
     {
