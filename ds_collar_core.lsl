@@ -123,8 +123,8 @@ show_main_menu(key av)
     list btns = core_btns();
     list ctxs = core_ctxs();
 
-    // Add lock/unlock controls for owner/trustee/wearer
-    if(acl <= 3){
+    // Add lock/unlock controls for owners only (ACL 1):
+    if(acl == 1){
         if(g_locked){ btns += ["Unlock"]; ctxs += ["unlock"]; }
         else        { btns += ["Lock"];   ctxs += ["lock"];   }
     }
@@ -364,7 +364,7 @@ default
         if(ctx == "main"){
             list ctxs = llParseString2List(menucsv, [","], []);
             list btns = core_btns();
-            if(get_acl(av) <= 3){
+            if(get_acl(av) == 1){
                 if(g_locked) btns += ["Unlock"]; else btns += ["Lock"];
             }
             integer i;
