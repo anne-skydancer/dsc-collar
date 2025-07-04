@@ -220,8 +220,10 @@ leash_follow_logic()
             if(g_turn_to)
             {
                 vector v = leash_point - wearer_pos;
+                float strength = 1.5;
+                float damping = 0.6;
                 float angle = llAtan2(v.x, v.y);
-                // Optionally add turn-to logic here (RLV, message, etc)
+                llLookAt(leash_point, strength, damping);
             }
         }
     }
@@ -302,6 +304,8 @@ default
                     g_leashed = FALSE;
                     g_leasher = NULL_KEY;
                     stop_leash_particles();
+                    llStopMoveToTarget();
+                    llStopLookAt();
                     llOwnerSay("[leash] Leash released.");
                     sclear(av);
                 }
@@ -325,6 +329,8 @@ default
                     g_leashed = FALSE;
                     g_leasher = NULL_KEY;
                     stop_leash_particles();
+                    llStopMoveToTarget();
+                    llStopLookAt();
                     llOwnerSay("[leash] Unclipped.");
                     sclear(av);
                 }
