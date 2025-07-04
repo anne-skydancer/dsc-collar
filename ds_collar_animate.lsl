@@ -228,7 +228,7 @@ default
         llRequestPermissions(llGetOwner(), PERMISSION_TRIGGER_ANIMATION);
 
         /* Register plugin with GUH: serial 1002, ACL 4 (anyone not blacklisted) */
-        llMessageLinked(LINK_THIS, 500, "register|1002|Animate|4|animate", NULL_KEY);
+        llMessageLinked(LINK_THIS, 500, "register|1002|Animate|4|core_animate", NULL_KEY);
 
         llSetTimerEvent(1.0);
         if (DEBUG) llOwnerSay("[Animate] ready, " + (string)count + " anims.");
@@ -239,12 +239,11 @@ default
         if (perms & PERMISSION_TRIGGER_ANIMATION)
         {
             g_have_perms = TRUE;
-            string queued = llGetObjectDesc();
-            if (queued != "")
+            if (g_queued_anim != "" )
             {
-                llStartAnimation(queued);
-                g_current_anim = queued;
-                llSetObjectDesc("");
+                llStartAnimation(g_queued_anim);
+                g_current_anim = g_queued_anim;
+                g_queued_anim="";
             }
         }
     }
