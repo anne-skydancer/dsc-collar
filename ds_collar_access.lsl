@@ -1,7 +1,7 @@
 /* =============================================================
-   Title: ds_collar_access - Access Control
-   Version: 1.0.0
-   Revision: 1
+   TITLE: ds_collar_access - Access control and management
+   VERSION: 1.0
+   REVISION: 2025-07-06
    ============================================================= */
 
 /* =============================================================
