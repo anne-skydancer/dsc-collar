@@ -1,4 +1,10 @@
 /* =============================================================
+   TITLE: ds_collar_core - Core logic                             
+   VERSION: 1.0
+   REVISION: 2025-07-06
+   ============================================================= */
+
+/* =============================================================
    BLOCK: GLOBAL VARIABLES BEGIN
    ============================================================= */
 integer DEBUG = TRUE;
@@ -270,7 +276,7 @@ timeout_check(){
 default
 {
     state_entry(){
-        if(DEBUG) llOwnerSay("[DEBUG] GUH state_entry");
+        if(DEBUG) llOwnerSay("[DEBUG] Core state_entry");
         llSetTimerEvent(1.0);
         update_lock_state();
     }
@@ -339,7 +345,7 @@ default
 
                 if(DEBUG)
                 {
-                    llOwnerSay("[GUH] State sync recv:" +
+                    llOwnerSay("[CORE] State sync recv:" +
                         " owner="     + (string)g_owner +
                         " ownerHon="  + g_owner_honorific +
                         " trust="     + llDumpList2String(g_trustees, ",") +
