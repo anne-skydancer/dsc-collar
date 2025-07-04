@@ -25,6 +25,22 @@ list   g_blacklist = [];
 integer g_public_access = FALSE;
 
 /*──────── session helpers ────────*/
+turn_to_leasher(key leasher)
+{
+    if(leasher == NULL_KEY) return;
+    vector wearer_pos = llGetRootPosition();
+    list det = llGetObjectDetails(leasher, [OBJECT_POS]);
+    if(llGetListLength(det) < 1) return;
+    vector leasher_pos = llList2Vector(det, 0);
+    vector fwd = llVecNorm(leasher_pos - wearer_pos);
+    rotation rot = llRotBetween(<1,0,0>, fwd);
+    llOwnerSay("@setrot:" + (string)rot + "=force");
+}
+
+clear_turn()
+{
+    llOwnerSay("@setrot=clear");
+}
 list    g_sessions;
 
 integer sidx(key av){ return llListFindList(g_sessions,[av]); }
@@ -220,11 +236,12 @@ leash_follow_logic()
         {
             vector tgt = leash_point + llVecNorm(offset) * max_len * 0.98;
             llMoveToTarget(tgt, 0.5);
-            if(g_turn_to)
+            if(g_turn_to && g_leasher != NULL_KEY)
             {
                 vector v = leash_point - wearer_pos;
                 float strength = 1.5;
                 float damping = 0.6;
+                turn_to_leasher(g_leasher);
                 float angle = llAtan2(v.x, v.y);
                 llLookAt(leash_point, strength, damping);
             }
@@ -309,6 +326,7 @@ default
                 g_leashed = FALSE;
                 g_leasher = NULL_KEY;
                 stop_leash_particles();
+                clear_turn();
                 llStopMoveToTarget();
                 llStopLookAt();
                 llOwnerSay("[leash] Leash released.");
@@ -334,6 +352,7 @@ default
                 g_leashed = FALSE;
                 g_leasher = NULL_KEY;
                 stop_leash_particles();
+                clear_turn();
                 llStopMoveToTarget();
                 llStopLookAt();
                 llOwnerSay("[leash] Unclipped.");
