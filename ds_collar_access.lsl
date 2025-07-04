@@ -41,33 +41,11 @@ list    g_sessions;
    BLOCK: GLOBAL VARIABLES END
    ============================================================= */
 
-
 /* =============================================================
    BLOCK: HELPERS BEGIN
    ============================================================= */
-/*
-    Core utility and session helpers:
-    - sync_state_to_guh: Sends current state to GUH (core) for cross-plugin sync.
-    - s_idx:             Session index for an avatar in g_sessions.
-    - g_idx:             Index-of for a key in any list.
-    - s_set:             Set/update session for avatar (removes old listen, opens new one).
-    - s_clear:           Remove session (and listen) for avatar.
-    - s_get:             Return session fields (list) for avatar, or empty if none.
-    - get_acl:           Returns user's access level (see inline doc).
-    - build_numbered_buttons: Builds ["1","2",...] style dialog buttons.
-    - numbered_menu_text: Returns "1. Label\n2. Label..." menu text for number-menus.
-    - owner_honorifics:  List of valid owner honorifics.
-    - trustee_honorifics: List of valid trustee honorifics.
-    - make_uac_nav_row:  Returns ["Cancel", " ", "OK"] row for nav dialogs.
-    - make_info_nav_row: Returns [" ", "OK", " "] for info dialogs.
-    - show_uac_dialog:   Standard UAC (User Accept/Cancel) dialog.
-    - show_info_dialog:  Informational dialog (OK only).
-    - show_public_access_dialog: Enable/disable public access dialog.
-*/
-
 sync_state_to_guh()
 {
-    // Compose owner, trustee, blacklist, honorific fields for GUH state packet.
     string owner_hon = g_owner_honorific;
     if (owner_hon == "") owner_hon = " ";
     string trust_csv = llDumpList2String(g_trustees, ",");
@@ -85,7 +63,6 @@ sync_state_to_guh()
     if (g_locked == TRUE) lock_str = "1";
     else lock_str = "0";
 
-    // Send state sync (8 fields) to GUH
     llMessageLinked(
         LINK_THIS,
         520,
@@ -197,17 +174,9 @@ show_public_access_dialog(key av, integer dialog_chan) {
    BLOCK: HELPERS END
    ============================================================= */
 
-
 /* =============================================================
    BLOCK: MENUS AND FLOWS BEGIN
    ============================================================= */
-/*
-    Menus and access management flows:
-    - show_access_menu:       Entry menu for access (owner/trustee/wearer/public).
-    - timeout_check:          Removes expired dialog sessions (and informs users).
-    - begin_add_owner, ...:   Handlers for launching add/remove/blacklist flows.
-*/
-
 show_access_menu(key av, integer dialog_chan) {
     integer acl = get_acl(av);
     list buttons = [];
@@ -244,7 +213,7 @@ show_access_menu(key av, integer dialog_chan) {
     }
 
     while (llGetListLength(buttons) % 3 != 0) buttons += " ";
-    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "access_menu", "", "", llDumpList2String(actions, ","), dialog_chan);
+    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "core_access", "", "", llDumpList2String(actions, ","), dialog_chan);
     llDialog(av, "Access Management:", buttons, dialog_chan);
 }
 
@@ -265,7 +234,6 @@ timeout_check() {
 }
 
 /* --- Flows for access management, each with UI and next-step logic --- */
-
 begin_add_owner(key av, integer dialog_chan) {
     llSensor("", NULL_KEY, AGENT, scan_range, TWO_PI);
     s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "add_owner", "", "", "", dialog_chan);
@@ -318,36 +286,25 @@ begin_unblacklist(key av, integer dialog_chan) {
    BLOCK: MENUS AND FLOWS END
    ============================================================= */
 
-
 /* =============================================================
    BLOCK: EVENTS AND STATE HANDLERS BEGIN
    ============================================================= */
-/*
-    Main event loop for the access plugin.
-    - state_entry:      Registers the plugin with GUH and sets periodic timer.
-    - link_message:     Handles requests from GUH (core) for access dialog.
-    - sensor:           Handles avatar detection flows (add owner/trustee/blacklist).
-    - no_sensor:        Handles sensor timeout (no avatars found).
-    - listen:           Processes all dialog/menu responses and flow logic.
-    - timer:            Triggers timeout_check every second.
-*/
-
 default
 {
     state_entry()
     {
         // Register this plugin with the GUH core
-        llMessageLinked(LINK_THIS, 500, "register|1001|Access|3|core", NULL_KEY);
+        llMessageLinked(LINK_THIS, 500, "register|1001|Access|3|core_access", NULL_KEY);
         llSetTimerEvent(1.0);
         if (DEBUG) llOwnerSay("[Access DEBUG] Plugin ready.");
     }
 
     link_message(integer sn, integer num, string str, key id)
     {
-        // GUH sends: num=510, str="core|<avatar>|<dialog_chan>"
+        // GUH sends: num=510, str="core_access|<avatar>|<dialog_chan>"
         if (num == 510) {
             list args = llParseString2List(str, ["|"], []);
-            if (llList2String(args,0) == "core" && llGetListLength(args) >= 3) {
+            if (llList2String(args,0) == "core_access" && llGetListLength(args) >= 3) {
                 key av = (key)llList2String(args,1);
                 integer dialog_chan = (integer)llList2String(args,2);
                 show_access_menu(av, dialog_chan);
@@ -358,7 +315,6 @@ default
 
     sensor(integer n)
     {
-        // Used for picking avatars for owner/trustee/blacklist flows.
         integer i;
         for (i=0; i<llGetListLength(g_sessions); i+=10)
         {
@@ -403,7 +359,6 @@ default
 
     no_sensor()
     {
-        // No avatars detected within scan range
         integer i;
         for (i=0; i<llGetListLength(g_sessions); i+=10) {
             key av = llList2Key(g_sessions, i);
@@ -418,10 +373,6 @@ default
 
     listen(integer chan, string nm, key av, string msg)
     {
-        /*
-            Handles all menu/dialog/button flows by session context.
-            Decodes session and button context, advancing flow logic accordingly.
-        */
         list sess = s_get(av);
         if (llGetListLength(sess) == 0) return;
         integer dialog_chan = llList2Integer(sess, 8);
@@ -442,7 +393,7 @@ default
         if (sel != -1 && sel < llGetListLength(allowed)) {
             action = llList2String(allowed, sel);
 
-            if (ctx == "access_menu") {
+            if (ctx == "core_access") {
                 if (action == "Add Owner")        { begin_add_owner(av, dialog_chan); return; }
                 if (action == "Release Sub")      { begin_release_sub(av, dialog_chan); return; }
                 if (action == "Add Trustee")      { begin_add_trustee(av, dialog_chan); return; }
@@ -458,6 +409,8 @@ default
                 return;
             }
         }
+
+        // All other dialog ctx handlers unchanged, remain as before...
 
         // --- ADD OWNER ---
         if (ctx == "add_owner") {
