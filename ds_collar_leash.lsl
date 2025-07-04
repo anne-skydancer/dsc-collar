@@ -1,7 +1,3 @@
-// =============================================================
-//  D/s Collar Leashing Plugin – strict LSL, GUH conventions, ACLs
-//  Version: 2025-07-08  (ACLs, GUH sync, NO nav row/buttons, Unclip only for LV3)
-// =============================================================
 
 integer debug = TRUE;
 
