@@ -1,7 +1,15 @@
+/* =============================================================
+   TITLE: ds_collar_leash - Leash and Tethering
+   VERSION: 1.0
+   REVISION: 2025-07-06
+   ============================================================= */
 
+/* =============================================================
+   BLOCK: GLOBAL VARIABLES & STATE BEGIN
+   ============================================================= */
 integer debug = TRUE;
 
-/*──────── persistent state ────────*/
+/* Persistent leash and session state */
 integer g_leashed        = FALSE;
 key     g_leasher        = NULL_KEY;
 integer g_leash_length   = 2;     // 1–20 meters, default 2
@@ -11,7 +19,7 @@ integer g_turn_to        = FALSE;
 vector  g_anchor         = ZERO_VECTOR;
 integer lg_channel       = -9119; // lockguard
 integer lm_channel       = -8888; // lockmeister
-key     g_lg_anchor      = NULL_KEY; // current lockguard anchor (object/avatar)
+key     g_lg_anchor      = NULL_KEY;
 string  g_chain_texture  = "4d3b6c6f-52e2-da9d-f7be-cccb1e535aca"; // example chain
 
 // --- GUH ACL state (live, synced from core) ---
@@ -20,25 +28,14 @@ list   g_trustees = [];
 list   g_blacklist = [];
 integer g_public_access = FALSE;
 
-/*──────── session helpers ────────*/
-turn_to_leasher(key leasher)
-{
-    if(leasher == NULL_KEY) return;
-    vector wearer_pos = llGetRootPosition();
-    list det = llGetObjectDetails(leasher, [OBJECT_POS]);
-    if(llGetListLength(det) < 1) return;
-    vector leasher_pos = llList2Vector(det, 0);
-    vector fwd = llVecNorm(leasher_pos - wearer_pos);
-    rotation rot = llRotBetween(<1,0,0>, fwd);
-    llOwnerSay("@setrot:" + (string)rot + "=force");
-}
-
-clear_turn()
-{
-    llOwnerSay("@setrot=clear");
-}
 list    g_sessions;
+/* =============================================================
+   BLOCK: GLOBAL VARIABLES & STATE END
+   ============================================================= */
 
+/* =============================================================
+   BLOCK: SESSION HELPERS BEGIN
+   ============================================================= */
 integer sidx(key av){ return llListFindList(g_sessions,[av]); }
 integer sset(key av,integer page,string csv,float exp,string ctx,string param,string step,string mcsv,integer chan)
 {
@@ -66,8 +63,13 @@ list sget(key av){
     if(~i) return llList2List(g_sessions,i,i+9);
     return [];
 }
+/* =============================================================
+   BLOCK: SESSION HELPERS END
+   ============================================================= */
 
-/*──────── ACL helpers (live, from GUH) ────────*/
+/* =============================================================
+   BLOCK: ACL HELPERS BEGIN
+   ============================================================= */
 integer get_acl(key av)
 {
     if(llListFindList(g_blacklist, [av]) != -1) return 5; // Blacklist
@@ -80,8 +82,13 @@ integer get_acl(key av)
     if(g_public_access == TRUE) return 4;                 // Public
     return 5;                                             // No access
 }
+/* =============================================================
+   BLOCK: ACL HELPERS END
+   ============================================================= */
 
-/*──────── menu buttons by ACL ────────*/
+/* =============================================================
+   BLOCK: MENU HELPERS BEGIN
+   ============================================================= */
 list leash_menu_btns(integer acl)
 {
     list btns = [];
@@ -105,7 +112,35 @@ list leash_menu_btns(integer acl)
     return btns;
 }
 
-/*──────── leash anchor ────────*/
+show_leash_menu(key av,integer chan){
+    integer acl = get_acl(av);
+    list btns = leash_menu_btns(acl);
+    sset(av,0,"",llGetUnixTime()+180.0,"menu","","","",chan);
+
+    string st = "Leash state:\n";
+    if(g_leashed) st += "Leashed to: "+llKey2Name(g_leasher)+"\n";
+    else st += "Not leashed\n";
+    st += "Length: "+(string)g_leash_length+" m";
+    if(g_turn_to) st += "\nTurn: ON";
+    else st += "\nTurn: OFF";
+    llDialog(av,st,btns,chan);
+}
+
+show_leash_length_menu(key av, integer chan)
+{
+    // "Back","OK","Cancel" on nav row (top), numbers go DOWN below nav row
+    list buttons = ["10", "15", "20", "1", "2", "5"];
+    sset(av, 0, "", llGetUnixTime() + 180.0, "set_length", "", "", "", chan);
+    string info = "Select leash length (meters):\nCurrent: " + (string)g_leash_length + " m";
+    llDialog(av, info, buttons, chan);
+}
+/* =============================================================
+   BLOCK: MENU HELPERS END
+   ============================================================= */
+
+/* =============================================================
+   BLOCK: LEASH ANCHOR & PARTICLES BEGIN
+   ============================================================= */
 vector leash_anchor_point()
 {
     integer nprims = llGetNumberOfPrims();
@@ -125,32 +160,6 @@ vector leash_anchor_point()
     return llGetRootPosition();
 }
 
-/*──────── main menu ────────*/
-show_leash_menu(key av,integer chan){
-    integer acl = get_acl(av);
-    list btns = leash_menu_btns(acl);
-    sset(av,0,"",llGetUnixTime()+180.0,"menu","","","",chan);
-
-    string st = "Leash state:\n";
-    if(g_leashed) st += "Leashed to: "+llKey2Name(g_leasher)+"\n";
-    else st += "Not leashed\n";
-    st += "Length: "+(string)g_leash_length+" m";
-    if(g_turn_to) st += "\nTurn: ON";
-    else st += "\nTurn: OFF";
-    llDialog(av,st,btns,chan);
-}
-
-/*──────── leash length dialog (vertical) ────────*/
-show_leash_length_menu(key av, integer chan)
-{
-    // "Back","OK","Cancel" on nav row (top), numbers go DOWN below nav row
-    list buttons = ["10", "15", "20", "1", "2", "5"];
-    sset(av, 0, "", llGetUnixTime() + 180.0, "set_length", "", "", "", chan);
-    string info = "Select leash length (meters):\nCurrent: " + (string)g_leash_length + " m";
-    llDialog(av, info, buttons, chan);
-}
-
-/*──────── leash visual particles ────────*/
 draw_leash_particles(key to)
 {
     // Settings for realistic ribbon leash
@@ -192,8 +201,13 @@ stop_leash_particles()
 {
     llParticleSystem([]);
 }
+/* =============================================================
+   BLOCK: LEASH ANCHOR & PARTICLES END
+   ============================================================= */
 
-/*──────── timeout check ────────*/
+/* =============================================================
+   BLOCK: TIMEOUT CHECK BEGIN
+   ============================================================= */
 timeout_check(){
     integer now = llGetUnixTime();
     integer i=0;
@@ -203,8 +217,13 @@ timeout_check(){
         else i += 10;
     }
 }
+/* =============================================================
+   BLOCK: TIMEOUT CHECK END
+   ============================================================= */
 
-/*──────── leash logic: keep wearer in leash range ────────*/
+/* =============================================================
+   BLOCK: LEASH LOGIC: FOLLOW & RESTRAINT BEGIN
+   ============================================================= */
 leash_follow_logic()
 {
     if(!g_leashed || g_leasher == NULL_KEY) return;
@@ -236,15 +255,35 @@ leash_follow_logic()
             {
                 // --- THIS turns the AVATAR, not the collar ---
                 turn_to_leasher(g_leasher);
-                // float angle = llAtan2(v.x, v.y); // not used for avatar turn
-                // llLookAt(leash_point, strength, damping); // REMOVE or COMMENT OUT
             }
         }
     }
     draw_leash_particles(leasher);
 }
 
-/*──────── default state ────────*/
+turn_to_leasher(key leasher)
+{
+    if(leasher == NULL_KEY) return;
+    vector wearer_pos = llGetRootPosition();
+    list det = llGetObjectDetails(leasher, [OBJECT_POS]);
+    if(llGetListLength(det) < 1) return;
+    vector leasher_pos = llList2Vector(det, 0);
+    vector fwd = llVecNorm(leasher_pos - wearer_pos);
+    rotation rot = llRotBetween(<1,0,0>, fwd);
+    llOwnerSay("@setrot:" + (string)rot + "=force");
+}
+
+clear_turn()
+{
+    llOwnerSay("@setrot=clear");
+}
+/* =============================================================
+   BLOCK: LEASH LOGIC END
+   ============================================================= */
+
+/* =============================================================
+   BLOCK: MAIN EVENT LOOP BEGIN
+   ============================================================= */
 default
 {
     state_entry(){
@@ -440,3 +479,6 @@ default
             stop_leash_particles();
     }
 }
+/* =============================================================
+   BLOCK: MAIN EVENT LOOP END
+   ============================================================= */
