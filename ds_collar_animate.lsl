@@ -24,7 +24,7 @@ float   dialog_timeout = 180.0;
 list    g_anim_names   = [];     // Sorted animation names
 integer g_have_perms   = FALSE;  // TRUE if PERMISSION_TRIGGER_ANIMATION granted
 string  g_current_anim = "";     // Name of animation currently playing
-string g_queued_anim = "";
+string  g_queued_anim  = "";     // Queued animation name
 
 /* Session cache: [av, page, csv, expiry, ctx, param, step, menucsv, chan, listen] */
 list    g_sessions;
@@ -161,7 +161,7 @@ show_anim_menu(key av, integer page, integer chan)
     buttons = reorder_buttons(buttons);
 
     s_set(av, page, "", llGetUnixTime() + dialog_timeout,
-          "anim_menu", "", "", "", chan);
+          "core_animate", "", "", "", chan);
 
     string header = "Select an animation (page " +
                     (string)(page + 1) + "/" + (string)pages + "):";
