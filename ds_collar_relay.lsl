@@ -1,12 +1,9 @@
 /* =============================================================
    TITLE: ds_collar_relay - RLV Relay Plugin (Apps Menu)
-   VERSION: 1.7
+   VERSION: 1.7.2
    REVISION: 2025-07-09
    ============================================================= */
 
-/* =============================================================
-   BLOCK: GLOBAL VARIABLES & CONFIG BEGIN
-   ============================================================= */
 integer DEBUG = TRUE;
 integer RELAY_CHANNEL = 723;      // RLV relay channel
 
@@ -24,13 +21,7 @@ list    g_blacklist = [];
 integer g_public_access = FALSE;
 
 list    g_sessions;
-/* =============================================================
-   BLOCK: GLOBAL VARIABLES & CONFIG END
-   ============================================================= */
 
-/* =============================================================
-   BLOCK: SESSION & ACCESS HELPERS BEGIN
-   ============================================================= */
 integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
 integer g_idx(list l, key k) { return llListFindList(l, [k]); }
 
@@ -75,13 +66,6 @@ integer get_acl(key av)
     if (g_public_access == TRUE) return 4;
     return 5;
 }
-/* =============================================================
-   BLOCK: SESSION & ACCESS HELPERS END
-   ============================================================= */
-
-/* =============================================================
-   BLOCK: PERSISTENCE BEGIN
-   ============================================================= */
 save_state()
 {
     string msg = "relay_save|" + (string)g_relay_mode + "|" + (string)g_hardcore;
@@ -94,13 +78,6 @@ load_state(list p)
     g_hardcore   = (integer)llList2String(p,2);
     if (DEBUG) llOwnerSay("[Relay] State loaded: mode=" + (string)g_relay_mode + " hc=" + (string)g_hardcore);
 }
-/* =============================================================
-   BLOCK: PERSISTENCE END
-   ============================================================= */
-
-/* =============================================================
-   BLOCK: RELAY OBJECT HANDLING BEGIN
-   ============================================================= */
 integer relay_idx(key obj)
 {
     integer i;
@@ -125,13 +102,6 @@ clear_relays()
 {
     g_relays = [];
 }
-/* =============================================================
-   BLOCK: RELAY OBJECT HANDLING END
-   ============================================================= */
-
-/* =============================================================
-   BLOCK: MENU/UI BUILDERS BEGIN
-   ============================================================= */
 list relay_menu_btns(integer acl)
 {
     list btns = [ "Mode", "Active Objects" ];
@@ -169,13 +139,12 @@ show_relay_menu(key av, integer chan)
 
     string hc_str;
     if(g_hardcore == TRUE)
-        hc_str = "HARDCORE ON";
+        hc_str = "Hardcore ON";
     else
         hc_str = "hardcore off";
 
     llDialog(av, "RLV Relay\nMode: "+mode_str+"\nHardcore: "+hc_str, btns, chan);
 }
-
 show_mode_menu(key av, integer chan)
 {
     string mode_str = "Current mode: ";
@@ -204,7 +173,7 @@ show_mode_info_dialog(key av, integer mode, integer chan)
 }
 show_hardcore_changed_info(key av, integer hc, integer chan)
 {
-    string txt = "HARDCORE relay mode is now ";
+    string txt = "Hardcore relay mode is now ";
     if(hc == TRUE) txt += "ENABLED.";
     else txt += "OFF.";
     llDialog(av, txt, [ " ", "OK", " " ], chan);
@@ -225,7 +194,7 @@ show_hardcore_confirm_owner(key av, integer chan)
 {
     s_set(av, 0, "", llGetUnixTime()+60.0, "hardcore_owner", "", "", "", chan);
     llDialog(av,
-        "WARNING - Activating hard core mode will leave the sub unable to extricate from any restraining furniture. Are you sure?",
+        "WARNING - Activating hardcore mode will leave the sub unable to extricate from any restraining furniture. Are you sure?",
         [ "Cancel", "OK", " " ], chan);
 }
 show_safeword_confirm(key av, integer chan)
@@ -243,13 +212,6 @@ show_unbind_confirm(key av, integer chan)
     s_set(av, 0, "", llGetUnixTime()+30.0, "unbind_confirm", "", "", "", chan);
     llDialog(av, "This action will unbind the sub from their predicament. Please confirm your choice:", [ "Cancel", "OK", " " ], chan);
 }
-/* =============================================================
-   BLOCK: MENU/UI BUILDERS END
-   ============================================================= */
-
-/* =============================================================
-   BLOCK: RLV PROCESSING LOGIC BEGIN
-   ============================================================= */
 integer relay_allowed(key sender)
 {
     if(g_relay_mode == MODE_OFF) return FALSE;
@@ -294,13 +256,6 @@ unbind_all()
     clear_relays();
     save_state();
 }
-/* =============================================================
-   BLOCK: RLV PROCESSING LOGIC END
-   ============================================================= */
-
-/* =============================================================
-   BLOCK: TIMEOUT MANAGEMENT BEGIN
-   ============================================================= */
 timeout_check()
 {
     integer now = llGetUnixTime();
@@ -311,13 +266,6 @@ timeout_check()
         else i += 10;
     }
 }
-/* =============================================================
-   BLOCK: TIMEOUT MANAGEMENT END
-   ============================================================= */
-
-/* =============================================================
-   BLOCK: MAIN EVENT LOOP BEGIN
-   ============================================================= */
 default
 {
     state_entry()
@@ -417,7 +365,6 @@ default
         }
         if(ctx == "mode_menu")
         {
-            // No confirmation: mode is set immediately, then info dialog.
             if(msg == "Set Off"){
                 g_relay_mode=MODE_OFF; save_state();
                 show_mode_info_dialog(av, g_relay_mode, chan);
@@ -433,14 +380,15 @@ default
                 show_mode_info_dialog(av, g_relay_mode, chan);
                 s_clear(av); return;
             }
-            // Only owner (ACL1) can set hardcore, and confirms
             if(msg == "Hardcore ON"){
                 show_hardcore_confirm_owner(av, chan); return;
             }
             if(msg == "Hardcore OFF"){
                 g_hardcore = FALSE; save_state();
                 show_hardcore_changed_info(av, g_hardcore, chan);
-                llDialog(llGetOwner(), "Hardcore relay mode has been DISABLED by your owner.", [ " ", "OK", " " ], chan);
+                if(g_owner != NULL_KEY && llGetOwner() != av) {
+                    llDialog(llGetOwner(), "Hardcore relay mode has been DISABLED by your owner.", [ " ", "OK", " " ], chan);
+                }
                 s_clear(av); return;
             }
             if(msg == "Cancel"){ s_clear(av); return; }
@@ -448,11 +396,15 @@ default
         if(ctx == "hardcore_owner")
         {
             // Owner confirms enabling hardcore
-            if(msg == "OK"){
-                g_hardcore = TRUE; save_state();
+            if(msg == "OK") {
+                g_hardcore = TRUE;
+                save_state();
                 show_hardcore_changed_info(av, g_hardcore, chan);
-                llDialog(llGetOwner(), "WARNING: Hardcore relay mode is now ENABLED. You will be unable to use safeword or unbind until it is disabled.", [ " ", "OK", " " ], chan);
-                s_clear(av); return;
+                if(g_owner != NULL_KEY && llGetOwner() != av) {
+                    llDialog(llGetOwner(), "WARNING - Hardcore mode is now enabled.", [ " ", "OK", " " ], chan);
+                }
+                s_clear(av); 
+                return;
             }
             if(msg == "Cancel"){ s_clear(av); return; }
         }
