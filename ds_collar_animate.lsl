@@ -18,6 +18,7 @@ float   dialog_timeout = 180.0;
 list    g_anim_names   = [];     // Sorted animation names
 integer g_have_perms   = FALSE;  // TRUE if PERMISSION_TRIGGER_ANIMATION granted
 string  g_current_anim = "";     // Name of animation currently playing
+string g_queued_anim = "";
 
 /* Session cache: [av, page, csv, expiry, ctx, param, step, menucsv, chan, listen] */
 list    g_sessions;
@@ -83,7 +84,7 @@ play_anim(string anim)
     if (!g_have_perms)
     {
         /* Queue animation until permissions are granted */
-        llSetObjectDesc(anim);
+        g_queued_anim = anim;
         llRequestPermissions(llGetOwner(), PERMISSION_TRIGGER_ANIMATION);
         return;
     }
