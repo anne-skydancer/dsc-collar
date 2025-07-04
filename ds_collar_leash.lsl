@@ -238,12 +238,10 @@ leash_follow_logic()
             llMoveToTarget(tgt, 0.5);
             if(g_turn_to && g_leasher != NULL_KEY)
             {
-                vector v = leash_point - wearer_pos;
-                float strength = 1.5;
-                float damping = 0.6;
+                // --- THIS turns the AVATAR, not the collar ---
                 turn_to_leasher(g_leasher);
-                float angle = llAtan2(v.x, v.y);
-                llLookAt(leash_point, strength, damping);
+                // float angle = llAtan2(v.x, v.y); // not used for avatar turn
+                // llLookAt(leash_point, strength, damping); // REMOVE or COMMENT OUT
             }
         }
     }
@@ -328,7 +326,7 @@ default
                 stop_leash_particles();
                 clear_turn();
                 llStopMoveToTarget();
-                llStopLookAt();
+
                 llOwnerSay("[leash] Leash released.");
                 sclear(av);
             }
@@ -354,7 +352,7 @@ default
                 stop_leash_particles();
                 clear_turn();
                 llStopMoveToTarget();
-                llStopLookAt();
+
                 llOwnerSay("[leash] Unclipped.");
                 sclear(av);
             }
