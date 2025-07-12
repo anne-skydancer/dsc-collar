@@ -12,7 +12,7 @@ integer MODE_OFF     = 0;
 integer MODE_CONSENT = 1;
 integer MODE_AUTO    = 2;
 
-integer g_relay_mode = 0;
+integer g_relay_mode = MODE_CONSENT;
 integer g_hardcore   = FALSE;
 // [obj, name, session_chan, restrictions(list-as-csv)]
 list    g_relays     = []; 
@@ -105,10 +105,35 @@ clear_relays()
     g_relays = [];
 }
 
-send_relay_response(key sender, integer chan, string msg)
+// ————————————————————————————————————————————————————————
+// Helper: broadcast RLV ACK/NACK on both channels
+// ————————————————————————————————————————————————————————
+send_relay_response(key sender, integer session_chan, string cmd, integer ok_or_deny)
 {
-    if (DEBUG) llOwnerSay("[Relay RESP " + (string)chan + "] to " + (string)sender + ": " + msg);
-    llRegionSayTo(sender, chan, msg);
+    // Decide “ok” vs “deny”
+    string result;
+    if (ok_or_deny == 1)
+    {
+        result = "ok";
+    }
+    else
+    {
+        result = "deny";
+    }
+
+    // Build the proper RLV message
+    string out = "RLV," + (string)llGetKey() + "," + cmd + "," + result;
+    if (DEBUG)
+    {
+        llOwnerSay("[Relay ACK] " + out);
+    }
+
+    // 1) Broadcast for any multi-protocol listener
+    llRegionSay(RELAY_CHANNEL, out);
+
+    // 2) Also reply to the original object on its session_chan
+    //    so legacy furniture scanning via llRegionSayTo(...) still works
+    llRegionSayTo(sender, session_chan, out);
 }
 
 // Stores restriction as CSV (since lists of lists are not supported)
@@ -131,95 +156,111 @@ clear_restrictions(key sender)
     g_relays = llListReplaceList(g_relays, [""], idx+3, idx+3);
 }
 
-// -- Multi-protocol handler (OpenCollar compatibility) --
 handle_relay_command(key sender, string name, integer session_chan, string message)
 {
-    // New multi-protocol: RLV,avatar,@command
-    if (llSubStringIndex(message, ",") != -1)
+    string cmd = message;
+    
+    // catch furniture's initial scan ping and reply immediately
+    if (llSubStringIndex(cmd, "@versionnew") == 0)
     {
-        list fields = llParseString2List(message, [","], []);
-        if (llGetListLength(fields) == 3)
-        {
-            string proto = llList2String(fields, 0);
-            key    target = (key)llList2String(fields, 1);
-            string rlvcmd = llList2String(fields, 2);
-            if (proto == "RLV" && target == llGetOwner())
-            {
-                if (DEBUG) llOwnerSay("[Relay] (Multi-Protocol) Got relay command: " + rlvcmd + " for " + (string)target + " from " + name);
-                // Accept and process
-                if (g_relay_mode == MODE_OFF) {
-                    send_relay_response(sender, session_chan, "deny," + (string)llGetKey() + "," + rlvcmd);
-                    return;
-                }
-                if (relay_idx(sender) == -1 && g_relay_mode == MODE_AUTO && relay_count() < 5)
-                    add_relay_object(sender, name, session_chan);
-
-                if (relay_idx(sender) == -1 && g_relay_mode == MODE_CONSENT && relay_count() < 5)
-                {
-                    integer temp_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
-                    // Store session_chan and sender for consent
-                    s_set(llGetOwner(), 0, (string)sender+"|"+name+"|"+rlvcmd+"|"+(string)session_chan, llGetUnixTime()+60.0, "consent", (string)sender+"|"+name+"|"+rlvcmd+"|"+(string)session_chan, "", "", temp_chan);
-                    llDialog(llGetOwner(), "Object \""+name+"\" requests to relay RLV commands to you.\nAllow?", [ "Cancel", "Allow", " " ], temp_chan);
-                    return;
-                }
-                if (relay_idx(sender) == -1) {
-                    send_relay_response(sender, session_chan, "deny," + (string)llGetKey() + "," + rlvcmd);
-                    return;
-                }
-                store_restriction(sender, rlvcmd);
-                llOwnerSay(rlvcmd); // Pass to viewer
-                send_relay_response(sender, session_chan, "ok," + (string)llGetKey() + "," + rlvcmd);
-                return;
-            }
-        }
-        // If message does not match RLV multi-protocol, fall through to below
-    }
-    // Standard relay !version/!impl/!release/@cmd
-    if (llSubStringIndex(message, "@") == 0)
-    {
-        if (g_relay_mode == MODE_OFF) {
-            send_relay_response(sender, session_chan, "deny," + (string)llGetKey() + "," + message);
-            return;
-        }
-        if (relay_idx(sender) == -1 && g_relay_mode == MODE_AUTO && relay_count() < 5)
-            add_relay_object(sender, name, session_chan);
-
-        if (relay_idx(sender) == -1 && g_relay_mode == MODE_CONSENT && relay_count() < 5)
-        {
-            integer temp_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
-            // Store session_chan and sender for consent
-            s_set(llGetOwner(), 0, (string)sender+"|"+name+"|"+message+"|"+(string)session_chan, llGetUnixTime()+60.0, "consent", (string)sender+"|"+name+"|"+message+"|"+(string)session_chan, "", "", temp_chan);
-            llDialog(llGetOwner(), "Object \""+name+"\" requests to relay RLV commands to you.\nAllow?", [ "Cancel", "Allow", " " ], temp_chan);
-            return;
-        }
-        if (relay_idx(sender) == -1) {
-            send_relay_response(sender, session_chan, "deny," + (string)llGetKey() + "," + message);
-            return;
-        }
-        store_restriction(sender, message);
-        llOwnerSay(message); // Pass to viewer
-        send_relay_response(sender, session_chan, "ok," + (string)llGetKey() + "," + message);
-        if (DEBUG) llOwnerSay("[RELAY] " + llKey2Name(sender) + ": " + message);
+        send_relay_response(sender, session_chan, "@version=1.11", 1);
         return;
     }
-    else if (message == "!version")
+    
+    // strip leading RLV,<key>,
+    if (llSubStringIndex(message, "RLV,") == 0)
     {
-        send_relay_response(sender, session_chan, "RestrainedLove API: 1.11");
+        list parts = llParseString2List(message, [","], []);
+        if (llGetListLength(parts) >= 3) cmd = llList2String(parts, 2);
     }
-    else if (message == "!impl")
-    {
-        send_relay_response(sender, session_chan, "ds_collar_relay|" + (string)llGetKey());
-    }
-    else if (message == "!release")
+
+    // furniture failure hook...
+    if (cmd == "!release_fail")
     {
         clear_restrictions(sender);
         remove_relay_object(sender);
-        send_relay_response(sender, session_chan, "released," + (string)llGetKey());
+        send_relay_response(sender, session_chan, "!release_fail", 1);
+        if (DEBUG) llOwnerSay("[Relay] Released on furniture-fail from " + name);
+        return;
     }
-    else
+
+    // built-ins
+    if (cmd == "!version")
     {
-        send_relay_response(sender, session_chan, "unknown_command");
+        send_relay_response(sender, session_chan, "!version", 1);
+        return;
     }
+    else if (cmd == "!impl")
+    {
+        send_relay_response(sender, session_chan, "!impl", 1);
+        return;
+    }
+    else if (cmd == "!release")
+    {
+        clear_restrictions(sender);
+        remove_relay_object(sender);
+        send_relay_response(sender, session_chan, "!release", 1);
+        return;
+    }
+
+    // only @commands left
+    if (llSubStringIndex(cmd, "@") == 0)
+    {
+        // OFF → deny
+        if (g_relay_mode == MODE_OFF)
+        {
+            send_relay_response(sender, session_chan, cmd, 0);
+            return;
+        }
+
+        // AUTO → auto-add
+        if (relay_idx(sender) == -1
+         && g_relay_mode == MODE_AUTO
+         && relay_count() < 5)
+        {
+            add_relay_object(sender, name, session_chan);
+        }
+
+        // CONSENT → only prompt if no existing “consent” session
+        if (relay_idx(sender) == -1
+         && g_relay_mode == MODE_CONSENT
+         && relay_count() < 5)
+        {
+            // check for existing consent dialog
+            integer si = s_idx(llGetOwner());
+            if (si == -1 || llList2String(g_sessions, si+4) != "consent")
+            {
+                integer temp_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
+                s_set(
+                    llGetOwner(), 0,
+                    (string)sender + "|" + name + "|" + cmd + "|" + (string)session_chan,
+                    llGetUnixTime() + 120.0,   // e.g. 2 min timeout
+                    "consent",
+                    (string)sender + "|" + name + "|" + cmd + "|" + (string)session_chan,
+                    "", "",
+                    temp_chan
+                );
+                llDialog(
+                    llGetOwner(),
+                    "Object \"" + name + "\" requests to apply " + cmd + ".\nAllow?",
+                    ["Cancel", "Allow", " "],
+                    temp_chan
+                );
+            }
+            // return whether we prompted or had an existing session
+            return;
+        }
+
+        // approved relay → store, apply, ack
+        store_restriction(sender, cmd);
+        llOwnerSay(cmd);
+        send_relay_response(sender, session_chan, cmd, 1);
+        if (DEBUG) llOwnerSay("[RELAY] Applied: " + cmd);
+        return;
+    }
+
+    // fallback deny
+    send_relay_response(sender, session_chan, cmd, 0);
 }
 
 /* =============================================================
@@ -338,13 +379,17 @@ show_unbind_confirm(key av, integer chan)
 unbind_all()
 {
     integer i;
-    for(i=0;i<llGetListLength(g_relays);i+=4)
+    for (i = 0; i < llGetListLength(g_relays); i += 4)
     {
-        key obj = llList2Key(g_relays,i);
-        integer session_chan = (integer)llList2Integer(g_relays,i+2);
-        send_relay_response(obj, session_chan, "!release," + (string)llGetKey());
+        key obj          = llList2Key(g_relays, i);
+        integer session_chan = llList2Integer(g_relays, i + 2);
+        // proper 4-arg call: cmd="!release", ok=1
+        send_relay_response(obj, session_chan, "!release", 1);
         llOwnerSay("@clear");
-        if(DEBUG) llOwnerSay("[RELAY] Cleared relay object "+llKey2Name(obj));
+        if (DEBUG)
+        {
+            llOwnerSay("[RELAY] Cleared relay object " + llKey2Name(obj));
+        }
     }
     clear_relays();
     //save_state(); // Call as needed if GUH/core expects it
@@ -538,12 +583,12 @@ default
                 add_relay_object(obj, name, session_chan);
                 store_restriction(obj, origmsg);
                 llOwnerSay(origmsg);
-                send_relay_response(obj, session_chan, "ok," + (string)llGetKey() + "," + origmsg);
+                send_relay_response(obj, session_chan, origmsg, 1);
                 if(DEBUG) llOwnerSay("[RELAY] Consent allowed " + name + " for session " + (string)session_chan);
             }
             else
             {
-                send_relay_response(obj, session_chan, "!release," + (string)llGetKey());
+                send_relay_response(obj, session_chan, origmsg, 0);
             }
             s_clear(av);
             return;
