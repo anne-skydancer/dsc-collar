@@ -1,11 +1,12 @@
 /* =============================================================
    TITLE: ds_collar_relay - RLV Relay Plugin (Apps Menu)
-   VERSION: 1.7.2
-   REVISION: 2025-07-09
+   VERSION: 2.0.1 (Corrected listen event, robust, OC-compatible)
+   REVISION: 2025-07-13
    ============================================================= */
 
 integer DEBUG = TRUE;
-integer RELAY_CHANNEL = 723;      // RLV relay channel
+integer RELAY_CHANNEL = -1812221819; // RLV relay command & response channel
+integer RLV_RESP_CHANNEL = 4711;     // Standard relay response channel
 
 integer MODE_OFF     = 0;
 integer MODE_CONSENT = 1;
@@ -13,15 +14,19 @@ integer MODE_AUTO    = 2;
 
 integer g_relay_mode = 0;
 integer g_hardcore   = FALSE;
-list    g_relays     = [];
+// [obj, name, session_chan, restrictions(list-as-csv)]
+list    g_relays     = []; 
 
 key     g_owner = NULL_KEY;
 list    g_trustees = [];
 list    g_blacklist = [];
 integer g_public_access = FALSE;
 
-list    g_sessions;
+list    g_sessions; // Menu/session state tracking
 
+/* =============================================================
+   BLOCK: SESSION HELPERS (Menu code untouched)
+   ============================================================= */
 integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
 integer g_idx(list l, key k) { return llListFindList(l, [k]); }
 
@@ -66,42 +71,158 @@ integer get_acl(key av)
     if (g_public_access == TRUE) return 4;
     return 5;
 }
-save_state()
-{
-    string msg = "relay_save|" + (string)g_relay_mode + "|" + (string)g_hardcore;
-    llMessageLinked(LINK_THIS, 530, msg, NULL_KEY);
-    if (DEBUG) llOwnerSay("[Relay] State saved: " + msg);
-}
-load_state(list p)
-{
-    g_relay_mode = (integer)llList2String(p,1);
-    g_hardcore   = (integer)llList2String(p,2);
-    if (DEBUG) llOwnerSay("[Relay] State loaded: mode=" + (string)g_relay_mode + " hc=" + (string)g_hardcore);
-}
+
+/* =============================================================
+   BLOCK: RELAY PROTOCOL LOGIC
+   ============================================================= */
+// [obj, name, session_chan, restrictions-csv]
 integer relay_idx(key obj)
 {
     integer i;
-    for(i=0;i<llGetListLength(g_relays);i+=2)
-        if(llList2Key(g_relays,i)==obj) return i;
+    for(i=0; i < llGetListLength(g_relays); i+=4)
+        if(llList2Key(g_relays,i) == obj) return i;
     return -1;
 }
-integer relay_count() { return llGetListLength(g_relays)/2; }
-add_relay_object(key obj, string name)
+integer relay_count() { return llGetListLength(g_relays)/4; }
+
+add_relay_object(key obj, string name, integer session_chan)
 {
-    if (relay_idx(obj) != -1) return;
+    integer idx = relay_idx(obj);
+    if (idx != -1) return;
     if (relay_count() >= 5) return;
-    g_relays += [obj, name];
+    g_relays += [obj, name, session_chan, ""];
 }
+
 remove_relay_object(key obj)
 {
-    integer i = relay_idx(obj);
-    if (i != -1)
-        g_relays = llDeleteSubList(g_relays, i, i+1);
+    integer idx = relay_idx(obj);
+    if (idx != -1)
+        g_relays = llDeleteSubList(g_relays, idx, idx+3);
 }
+
 clear_relays()
 {
     g_relays = [];
 }
+
+send_relay_response(key sender, integer chan, string msg)
+{
+    if (DEBUG) llOwnerSay("[Relay RESP " + (string)chan + "] to " + (string)sender + ": " + msg);
+    llRegionSayTo(sender, chan, msg);
+}
+
+// Stores restriction as CSV (since lists of lists are not supported)
+store_restriction(key sender, string cmd)
+{
+    integer idx = relay_idx(sender);
+    if (idx == -1) return;
+    string restr = llList2String(g_relays, idx+3);
+    if (restr != "")
+        restr += "," + cmd;
+    else
+        restr = cmd;
+    g_relays = llListReplaceList(g_relays, [restr], idx+3, idx+3);
+}
+
+clear_restrictions(key sender)
+{
+    integer idx = relay_idx(sender);
+    if (idx == -1) return;
+    g_relays = llListReplaceList(g_relays, [""], idx+3, idx+3);
+}
+
+// -- Multi-protocol handler (OpenCollar compatibility) --
+handle_relay_command(key sender, string name, integer session_chan, string message)
+{
+    // New multi-protocol: RLV,avatar,@command
+    if (llSubStringIndex(message, ",") != -1)
+    {
+        list fields = llParseString2List(message, [","], []);
+        if (llGetListLength(fields) == 3)
+        {
+            string proto = llList2String(fields, 0);
+            key    target = (key)llList2String(fields, 1);
+            string rlvcmd = llList2String(fields, 2);
+            if (proto == "RLV" && target == llGetOwner())
+            {
+                if (DEBUG) llOwnerSay("[Relay] (Multi-Protocol) Got relay command: " + rlvcmd + " for " + (string)target + " from " + name);
+                // Accept and process
+                if (g_relay_mode == MODE_OFF) {
+                    send_relay_response(sender, session_chan, "deny," + (string)llGetKey() + "," + rlvcmd);
+                    return;
+                }
+                if (relay_idx(sender) == -1 && g_relay_mode == MODE_AUTO && relay_count() < 5)
+                    add_relay_object(sender, name, session_chan);
+
+                if (relay_idx(sender) == -1 && g_relay_mode == MODE_CONSENT && relay_count() < 5)
+                {
+                    integer temp_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
+                    s_set(llGetOwner(), 0, (string)sender+"|"+name+"|"+rlvcmd+"|"+(string)session_chan, llGetUnixTime()+30.0, "consent", "", "", "", temp_chan);
+                    llDialog(llGetOwner(), "Object \""+name+"\" requests to relay RLV commands to you.\nAllow?", [ "Cancel", "Allow", " " ], temp_chan);
+                    return;
+                }
+                if (relay_idx(sender) == -1) {
+                    send_relay_response(sender, session_chan, "deny," + (string)llGetKey() + "," + rlvcmd);
+                    return;
+                }
+                store_restriction(sender, rlvcmd);
+                llOwnerSay(rlvcmd); // Pass to viewer
+                send_relay_response(sender, session_chan, "ok," + (string)llGetKey() + "," + rlvcmd);
+                return;
+            }
+        }
+        // If message does not match RLV multi-protocol, fall through to below
+    }
+    // Standard relay !version/!impl/!release/@cmd
+    if (llSubStringIndex(message, "@") == 0)
+    {
+        if (g_relay_mode == MODE_OFF) {
+            send_relay_response(sender, session_chan, "deny," + (string)llGetKey() + "," + message);
+            return;
+        }
+        if (relay_idx(sender) == -1 && g_relay_mode == MODE_AUTO && relay_count() < 5)
+            add_relay_object(sender, name, session_chan);
+
+        if (relay_idx(sender) == -1 && g_relay_mode == MODE_CONSENT && relay_count() < 5)
+        {
+            integer temp_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
+            s_set(llGetOwner(), 0, (string)sender+"|"+name+"|"+message+"|"+(string)session_chan, llGetUnixTime()+30.0, "consent", "", "", "", temp_chan);
+            llDialog(llGetOwner(), "Object \""+name+"\" requests to relay RLV commands to you.\nAllow?", [ "Cancel", "Allow", " " ], temp_chan);
+            return;
+        }
+        if (relay_idx(sender) == -1) {
+            send_relay_response(sender, session_chan, "deny," + (string)llGetKey() + "," + message);
+            return;
+        }
+        store_restriction(sender, message);
+        llOwnerSay(message); // Pass to viewer
+        send_relay_response(sender, session_chan, "ok," + (string)llGetKey() + "," + message);
+        if (DEBUG) llOwnerSay("[RELAY] " + llKey2Name(sender) + ": " + message);
+        return;
+    }
+    else if (message == "!version")
+    {
+        send_relay_response(sender, session_chan, "RestrainedLove API: 1.11");
+    }
+    else if (message == "!impl")
+    {
+        send_relay_response(sender, session_chan, "ds_collar_relay|" + (string)llGetKey());
+    }
+    else if (message == "!release")
+    {
+        clear_restrictions(sender);
+        remove_relay_object(sender);
+        send_relay_response(sender, session_chan, "released," + (string)llGetKey());
+    }
+    else
+    {
+        send_relay_response(sender, session_chan, "unknown_command");
+    }
+}
+
+/* =============================================================
+   BLOCK: MENU/UI code (untouched)
+   ============================================================= */
 list relay_menu_btns(integer acl)
 {
     list btns = [ "Mode", "Active Objects" ];
@@ -185,8 +306,8 @@ show_objects_menu(key av, integer chan)
         s = "No active relay objects.";
     else{
         integer i;
-        for(i=0;i<llGetListLength(g_relays);i+=2)
-            s += (string)((i/2)+1)+". "+llList2String(g_relays,i+1)+"\n";
+        for(i=0;i<llGetListLength(g_relays);i+=4)
+            s += (string)((i/4)+1)+". "+llList2String(g_relays,i+1)+"\n";
     }
     llDialog(av, "Active relay objects:\n"+s, [ " ", "OK", " " ], chan);
 }
@@ -212,49 +333,19 @@ show_unbind_confirm(key av, integer chan)
     s_set(av, 0, "", llGetUnixTime()+30.0, "unbind_confirm", "", "", "", chan);
     llDialog(av, "This action will unbind the sub from their predicament. Please confirm your choice:", [ "Cancel", "OK", " " ], chan);
 }
-integer relay_allowed(key sender)
-{
-    if(g_relay_mode == MODE_OFF) return FALSE;
-    if(relay_idx(sender) != -1) return TRUE;
-    if(g_relay_mode == MODE_AUTO && relay_count() < 5) return TRUE;
-    if(g_relay_mode == MODE_CONSENT && relay_count() < 5) return FALSE;
-    return FALSE;
-}
-process_rly_command(key sender, string name, string message)
-{
-    integer idx = relay_idx(sender);
-
-    if(g_relay_mode == MODE_OFF) return;
-
-    if(idx != -1){
-        llOwnerSay(message);
-        if(DEBUG) llOwnerSay("[RELAY] "+llKey2Name(sender)+": "+message);
-        return;
-    }
-    if(g_relay_mode == MODE_AUTO && relay_count() < 5){
-        add_relay_object(sender, name);
-        llOwnerSay(message);
-        if(DEBUG) llOwnerSay("[RELAY] AUTO-accepted "+llKey2Name(sender)+": "+message);
-        return;
-    }
-    if(g_relay_mode == MODE_CONSENT && relay_count() < 5){
-        integer temp_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
-        s_set(llGetOwner(), 0, (string)sender+"|"+name+"|"+message, llGetUnixTime()+30.0, "consent", "", "", "", temp_chan);
-        llDialog(llGetOwner(), "Object \""+name+"\" requests to relay RLV commands to you.\nAllow?", [ "Cancel", "Allow", " " ], temp_chan);
-        return;
-    }
-}
 unbind_all()
 {
     integer i;
-    for(i=0;i<llGetListLength(g_relays);i+=2)
+    for(i=0;i<llGetListLength(g_relays);i+=4)
     {
         key obj = llList2Key(g_relays,i);
+        integer session_chan = (integer)llList2Integer(g_relays,i+2);
+        send_relay_response(obj, session_chan, "!release," + (string)llGetKey());
         llOwnerSay("@clear");
         if(DEBUG) llOwnerSay("[RELAY] Cleared relay object "+llKey2Name(obj));
     }
     clear_relays();
-    save_state();
+    //save_state(); // Call as needed if GUH/core expects it
 }
 timeout_check()
 {
@@ -266,6 +357,22 @@ timeout_check()
         else i += 10;
     }
 }
+save_state()
+{
+    string msg = "relay_save|" + (string)g_relay_mode + "|" + (string)g_hardcore;
+    llMessageLinked(LINK_THIS, 530, msg, NULL_KEY);
+    if (DEBUG) llOwnerSay("[Relay] State saved: " + msg);
+}
+load_state(list p)
+{
+    g_relay_mode = (integer)llList2String(p,1);
+    g_hardcore   = (integer)llList2String(p,2);
+    if (DEBUG) llOwnerSay("[Relay] State loaded: mode=" + (string)g_relay_mode + " hc=" + (string)g_hardcore);
+}
+
+/* =============================================================
+   BLOCK: MAIN EVENT LOOP
+   ============================================================= */
 default
 {
     state_entry()
@@ -330,12 +437,21 @@ default
 
     listen(integer chan, string nm, key av, string msg)
     {
-        if(chan==RELAY_CHANNEL && llSubStringIndex(msg, "@") == 0)
+        // Standard relay: "command|session_chan"
+        if(chan==RELAY_CHANNEL)
         {
-            if(DEBUG) llOwnerSay("[Relay] Got relay command: "+msg+" from "+llKey2Name(av));
-            process_rly_command(av, llKey2Name(av), msg);
+            list p = llParseString2List(msg, ["|"], []);
+            string rlv_msg = llList2String(p,0);
+            integer session_chan;
+            if (llGetListLength(p) > 1)
+                session_chan = (integer)llList2String(p, 1);
+            else
+                session_chan = RLV_RESP_CHANNEL;
+            if (DEBUG) llOwnerSay("[Relay] Got relay command: " + rlv_msg + " from " + llKey2Name(av) + " @chan " + (string)session_chan);
+            handle_relay_command(av, llKey2Name(av), session_chan, rlv_msg);
             return;
         }
+        // == Menu system: UI code untouched ==
         list s = s_get(av);
         if(llGetListLength(s)==0) return;
         if(chan != llList2Integer(s,8)) return;
@@ -414,10 +530,17 @@ default
             key obj = (key)llList2String(args, 0);
             string name = llList2String(args, 1);
             string origmsg = llList2String(args, 2);
+            integer session_chan = (integer)llList2String(args, 3);
             if(msg == "Allow"){
-                add_relay_object(obj, name);
+                add_relay_object(obj, name, session_chan);
+                store_restriction(obj, origmsg);
                 llOwnerSay(origmsg);
-                if(DEBUG) llOwnerSay("[RELAY] Consent allowed "+name);
+                send_relay_response(obj, session_chan, "ok," + (string)llGetKey() + "," + origmsg);
+                if(DEBUG) llOwnerSay("[RELAY] Consent allowed " + name + " for session " + (string)session_chan);
+            }
+            else
+            {
+                send_relay_response(obj, session_chan, "deny," + (string)llGetKey() + "," + origmsg);
             }
             s_clear(av);
             return;
