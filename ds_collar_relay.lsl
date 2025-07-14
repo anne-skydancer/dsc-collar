@@ -5,325 +5,228 @@
    ============================================================= */
 
 integer DEBUG = TRUE;
-integer RELAY_CHANNEL = -1812221819; // RLV relay command & response channel
-integer RLV_RESP_CHANNEL = 4711;     // Standard relay response channel
 
+integer RELAY_CHANNEL   = -1812221819; // RLV relay channel (scan, restrict, info)
+integer RLV_RESP_CHANNEL= 4711;        // Legacy fallback
+integer MAX_RELAYS      = 5;           // RLV standard
+
+// Modes
 integer MODE_OFF     = 0;
-integer MODE_CONSENT = 1;
-integer MODE_AUTO    = 2;
+integer MODE_ON      = 1;
+integer MODE_HARDCORE= 2;
 
-integer g_relay_mode = MODE_CONSENT;
+integer g_mode       = MODE_ON;
 integer g_hardcore   = FALSE;
-// [obj, name, session_chan, restrictions(list-as-csv)]
-list    g_relays     = []; 
+list    g_relays     = []; // [obj, name, session_chan, restrictions-csv]
+list    g_sessions   = []; // menu/session tracking
 
 key     g_owner = NULL_KEY;
 list    g_trustees = [];
 list    g_blacklist = [];
 integer g_public_access = FALSE;
 
-list    g_sessions; // Menu/session state tracking
-
-/* =============================================================
-   BLOCK: SESSION HELPERS (Menu code untouched)
-   ============================================================= */
+/* ========== SESSION/HELPERS ========== */
 integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
 integer g_idx(list l, key k) { return llListFindList(l, [k]); }
-
-integer s_set(key av, integer page, string csv, float expiry, string ctx, string param, string step, string menucsv, integer dialog_chan)
-{
-    integer i = s_idx(av);
-    integer old = -1;
-    if (~i) {
-        old = llList2Integer(g_sessions, i+9);
-        g_sessions = llDeleteSubList(g_sessions, i, i+9);
-    }
-    if (old != -1) llListenRemove(old);
-    integer lh = llListen(dialog_chan, "", av, "");
-    g_sessions += [av, page, csv, expiry, ctx, param, step, menucsv, dialog_chan, lh];
-    return TRUE;
-}
-integer s_clear(key av)
-{
-    integer i = s_idx(av);
-    if (~i) {
-        integer old = llList2Integer(g_sessions, i+9);
-        if (old != -1) llListenRemove(old);
-        g_sessions = llDeleteSubList(g_sessions, i, i+9);
-    }
-    return TRUE;
-}
-list s_get(key av)
-{
-    integer i = s_idx(av);
-    if (~i) return llList2List(g_sessions, i, i+9);
-    return [];
-}
-integer get_acl(key av)
-{
-    if (g_idx(g_blacklist, av) != -1) return 5;
-    if (av == g_owner) return 1;
-    if (av == llGetOwner()) {
-        if (g_owner == NULL_KEY) return 1;
-        return 3;
-    }
-    if (g_idx(g_trustees, av) != -1) return 2;
-    if (g_public_access == TRUE) return 4;
-    return 5;
-}
-
-/* =============================================================
-   BLOCK: RELAY PROTOCOL LOGIC
-   ============================================================= */
-// [obj, name, session_chan, restrictions-csv]
-integer relay_idx(key obj)
-{
+integer relay_idx(key obj) {
     integer i;
-    for(i=0; i < llGetListLength(g_relays); i+=4)
-        if(llList2Key(g_relays,i) == obj) return i;
+    for (i=0;i<llGetListLength(g_relays);i+=4)
+        if (llList2Key(g_relays,i)==obj) return i;
     return -1;
 }
 integer relay_count() { return llGetListLength(g_relays)/4; }
-
-add_relay_object(key obj, string name, integer session_chan)
-{
+string restrict_list(key obj) {
     integer idx = relay_idx(obj);
-    if (idx != -1) return;
-    if (relay_count() >= 5) return;
-    g_relays += [obj, name, session_chan, ""];
+    if (idx==-1) return "";
+    return llList2String(g_relays,idx+3);
 }
 
-remove_relay_object(key obj)
-{
+/* Adds/removes relays */
+add_relay_object(key obj, string name, integer session_chan) {
+    if (relay_idx(obj)!=-1) return;
+    if (relay_count()>=MAX_RELAYS) return;
+    g_relays += [obj,name,session_chan,""];
+}
+remove_relay_object(key obj) {
     integer idx = relay_idx(obj);
-    if (idx != -1)
-        g_relays = llDeleteSubList(g_relays, idx, idx+3);
+    if (idx!=-1) g_relays = llDeleteSubList(g_relays,idx,idx+3);
 }
-
-clear_relays()
-{
-    g_relays = [];
+clear_relays() { g_relays = []; }
+store_restriction(key obj, string cmd) {
+    integer idx = relay_idx(obj);
+    if (idx==-1) return;
+    string r = llList2String(g_relays,idx+3);
+    if (r!="") r += ","+cmd;
+    else r = cmd;
+    g_relays = llListReplaceList(g_relays, [r], idx+3, idx+3);
 }
-
-// ————————————————————————————————————————————————————————
-// Helper: broadcast RLV ACK/NACK on both channels
-// ————————————————————————————————————————————————————————
-send_relay_response(key sender, integer session_chan, string cmd, integer ok_or_deny)
-{
-    // Decide “ok” vs “deny”
-    string result;
-    if (ok_or_deny == 1)
-    {
-        result = "ok";
-    }
-    else
-    {
-        result = "deny";
-    }
-
-    // Build the proper RLV message
-    string out = "RLV," + (string)llGetKey() + "," + cmd + "," + result;
-    if (DEBUG)
-    {
-        llOwnerSay("[Relay ACK] " + out);
-    }
-
-    // 1) Broadcast for any multi-protocol listener
-    llRegionSay(RELAY_CHANNEL, out);
-
-    // 2) Also reply to the original object on its session_chan
-    //    so legacy furniture scanning via llRegionSayTo(...) still works
-    llRegionSayTo(sender, session_chan, out);
-}
-
-// Stores restriction as CSV (since lists of lists are not supported)
-store_restriction(key sender, string cmd)
-{
-    integer idx = relay_idx(sender);
-    if (idx == -1) return;
-    string restr = llList2String(g_relays, idx+3);
-    if (restr != "")
-        restr += "," + cmd;
-    else
-        restr = cmd;
-    g_relays = llListReplaceList(g_relays, [restr], idx+3, idx+3);
-}
-
-clear_restrictions(key sender)
-{
-    integer idx = relay_idx(sender);
-    if (idx == -1) return;
+clear_restrictions(key obj) {
+    integer idx = relay_idx(obj);
+    if (idx==-1) return;
     g_relays = llListReplaceList(g_relays, [""], idx+3, idx+3);
 }
 
-handle_relay_command(key sender, string name, integer session_chan, string message)
-{
-    string cmd = message;
-    
-    // catch furniture's initial scan ping and reply immediately
-    if (llSubStringIndex(cmd, "@versionnew") == 0)
-    {
-        send_relay_response(sender, session_chan, "@version=1.11", 1);
-        return;
+/* Helper: return access level */
+integer get_acl(key av) {
+    if (g_idx(g_blacklist,av)!=-1) return 5;
+    if (av==g_owner) return 1;
+    if (av==llGetOwner()) {
+        if (g_owner==NULL_KEY) return 1;
+        return 3;
     }
-    
-    // strip leading RLV,<key>,
-    if (llSubStringIndex(message, "RLV,") == 0)
-    {
-        list parts = llParseString2List(message, [","], []);
-        if (llGetListLength(parts) >= 3) cmd = llList2String(parts, 2);
-    }
-
-    // furniture failure hook...
-    if (cmd == "!release_fail")
-    {
-        clear_restrictions(sender);
-        remove_relay_object(sender);
-        send_relay_response(sender, session_chan, "!release_fail", 1);
-        if (DEBUG) llOwnerSay("[Relay] Released on furniture-fail from " + name);
-        return;
-    }
-
-    // built-ins
-    if (cmd == "!version")
-    {
-        send_relay_response(sender, session_chan, "!version", 1);
-        return;
-    }
-    else if (cmd == "!impl")
-    {
-        send_relay_response(sender, session_chan, "!impl", 1);
-        return;
-    }
-    else if (cmd == "!release")
-    {
-        clear_restrictions(sender);
-        remove_relay_object(sender);
-        send_relay_response(sender, session_chan, "!release", 1);
-        return;
-    }
-
-    // only @commands left
-    if (llSubStringIndex(cmd, "@") == 0)
-    {
-        // OFF → deny
-        if (g_relay_mode == MODE_OFF)
-        {
-            send_relay_response(sender, session_chan, cmd, 0);
-            return;
-        }
-
-        // AUTO → auto-add
-        if (relay_idx(sender) == -1
-         && g_relay_mode == MODE_AUTO
-         && relay_count() < 5)
-        {
-            add_relay_object(sender, name, session_chan);
-        }
-
-        // CONSENT → only prompt if no existing “consent” session
-        if (relay_idx(sender) == -1
-         && g_relay_mode == MODE_CONSENT
-         && relay_count() < 5)
-        {
-            // check for existing consent dialog
-            integer si = s_idx(llGetOwner());
-            if (si == -1 || llList2String(g_sessions, si+4) != "consent")
-            {
-                integer temp_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
-                s_set(
-                    llGetOwner(), 0,
-                    (string)sender + "|" + name + "|" + cmd + "|" + (string)session_chan,
-                    llGetUnixTime() + 120.0,   // e.g. 2 min timeout
-                    "consent",
-                    (string)sender + "|" + name + "|" + cmd + "|" + (string)session_chan,
-                    "", "",
-                    temp_chan
-                );
-                llDialog(
-                    llGetOwner(),
-                    "Object \"" + name + "\" requests to apply " + cmd + ".\nAllow?",
-                    ["Cancel", "Allow", " "],
-                    temp_chan
-                );
-            }
-            // return whether we prompted or had an existing session
-            return;
-        }
-
-        // approved relay → store, apply, ack
-        store_restriction(sender, cmd);
-        llOwnerSay(cmd);
-        send_relay_response(sender, session_chan, cmd, 1);
-        if (DEBUG) llOwnerSay("[RELAY] Applied: " + cmd);
-        return;
-    }
-
-    // fallback deny
-    send_relay_response(sender, session_chan, cmd, 0);
+    if (g_idx(g_trustees,av)!=-1) return 2;
+    if (g_public_access==TRUE) return 4;
+    return 5;
 }
 
-/* =============================================================
-   BLOCK: MENU/UI code (untouched)
-   ============================================================= */
+/* ========== RELAY LOGIC ========== */
+integer is_scan_info_cmd(string cmd) {
+    if (cmd == "@version") return TRUE;
+    if (cmd == "@versionnew") return TRUE;
+    if (cmd == "!version") return TRUE;
+    if (cmd == "!impl") return TRUE;
+    if (cmd == "!release") return TRUE;
+    return FALSE;
+}
+
+send_relay_response(key sender, integer session_chan, string cmd, integer ok) {
+    string result = "deny";
+    if (ok==1) result = "ok";
+    string msg = "RLV,"+(string)llGetKey()+","+cmd+","+result;
+    if (DEBUG) llOwnerSay("[Relay ACK] "+msg);
+    llRegionSay(RELAY_CHANNEL,msg);
+    llRegionSayTo(sender,session_chan,msg);
+}
+
+/* ========== MAIN RELAY COMMAND HANDLER ========== */
+handle_relay_command(key sender, string name, integer session_chan, string message) {
+    string cmd = message;
+    if (llSubStringIndex(message,"RLV,")==0) {
+        list parts = llParseString2List(message,[","],[]);
+        if (llGetListLength(parts)>=3) cmd=llList2String(parts,2);
+    }
+    // Info/scan commands, always ACK and auto-register
+    if (is_scan_info_cmd(cmd)) {
+        if (relay_idx(sender)==-1 && relay_count()<MAX_RELAYS)
+            add_relay_object(sender,name,session_chan);
+        if (cmd=="!release") {
+            clear_restrictions(sender);
+            remove_relay_object(sender);
+        }
+        if (cmd=="@versionnew")
+            send_relay_response(sender,session_chan,"@version=1.11",1);
+        else
+            send_relay_response(sender,session_chan,cmd,1);
+        return;
+    }
+    // Handle furniture failure
+    if (cmd=="!release_fail") {
+        clear_restrictions(sender);
+        remove_relay_object(sender);
+        send_relay_response(sender,session_chan,"!release_fail",1);
+        if (DEBUG) llOwnerSay("[Relay] Released on fail from "+name);
+        return;
+    }
+    // Actual RLV restrictions
+    if (llSubStringIndex(cmd,"@")==0) {
+        if (g_mode==MODE_OFF) {
+            send_relay_response(sender,session_chan,cmd,0);
+            return;
+        }
+        // ON and HARDCORE both behave as "always allow"
+        if (relay_idx(sender)==-1 && relay_count()<MAX_RELAYS)
+            add_relay_object(sender,name,session_chan);
+        store_restriction(sender,cmd);
+        llOwnerSay(cmd);
+        send_relay_response(sender,session_chan,cmd,1);
+        if (DEBUG) llOwnerSay("[RELAY] Applied (ON/HARDCORE): "+cmd);
+        return;
+    }
+    // Fallback: deny
+    send_relay_response(sender,session_chan,cmd,0);
+}
+
+/* ========== SESSION MENU AND STATE ========== */
+integer s_set(key av, integer page, string csv, float expiry, string ctx, string param, string step, string menucsv, integer dialog_chan) {
+    integer i = s_idx(av); integer old=-1;
+    if (~i) { old=llList2Integer(g_sessions,i+9); g_sessions=llDeleteSubList(g_sessions,i,i+9);}
+    if (old!=-1) llListenRemove(old);
+    integer lh=llListen(dialog_chan,"",av,"");
+    g_sessions += [av,page,csv,expiry,ctx,param,step,menucsv,dialog_chan,lh];
+    return TRUE;
+}
+integer s_clear(key av) {
+    integer i = s_idx(av); if (~i) {
+        integer old=llList2Integer(g_sessions,i+9); if (old!=-1) llListenRemove(old);
+        g_sessions = llDeleteSubList(g_sessions,i,i+9);}
+    return TRUE;
+}
+list s_get(key av) {
+    integer i = s_idx(av); if (~i) return llList2List(g_sessions,i,i+9); return [];
+}
+
+/* ========== MENU/UI (BOTTOM-UP ORDER) ========== */
 list relay_menu_btns(integer acl)
 {
-    list btns = [ "Mode", "Active Objects" ];
-    if(acl == 1) btns += [ "Unbind", " " ];
-    else if(acl == 2) btns += [ "Unbind", " " ];
-    else if(acl == 3) btns += [ "Safeword", " " ];
-    btns += [ "Back" ];
-    while(llGetListLength(btns)%3!=0) btns += [ " " ];
+    // Build bottom-up for LSL dialog layout
+    list btns = [ " ", "Back", " " ]; // Bottom row: Back centered
+    string third_btn = " ";
+    if (acl == 1 || acl == 2) third_btn = "Unbind";
+    else if (acl == 3 && g_hardcore == FALSE) third_btn = "Safeword";
+    btns += [ "Mode", "Active Objects", third_btn ]; // Row above
     return btns;
 }
 list relay_menu_ctxs(integer acl)
 {
-    list c = [ "mode", "objects" ];
-    if(acl == 1) c += [ "unbind", " " ];
-    else if(acl == 2) c += [ "unbind", " " ];
-    else if(acl == 3) c += [ "safeword", " " ];
-    c += [ "back" ];
+    list c = [ " ", "back", " " ];
+    string third_ctx = " ";
+    if (acl == 1 || acl == 2) third_ctx = "unbind";
+    else if (acl == 3 && g_hardcore == FALSE) third_ctx = "safeword";
+    c += [ "mode", "objects", third_ctx ];
     return c;
 }
 show_relay_menu(key av, integer chan)
 {
     integer acl = get_acl(av);
     if(acl > 3) return;
-
     list btns = relay_menu_btns(acl);
     list ctxs = relay_menu_ctxs(acl);
-
     s_set(av, 0, "", llGetUnixTime()+180.0, "menu", "", "", llDumpList2String(ctxs, ","), chan);
 
     string mode_str = "OFF";
-    if(g_relay_mode == 1)
-        mode_str = "ASK";
-    else if(g_relay_mode == 2)
-        mode_str = "AUTO";
+    if(g_mode == 1)
+        mode_str = "ON";
+    else if(g_mode == 2)
+        mode_str = "HARDCORE";
 
     string hc_str;
     if(g_hardcore == TRUE)
         hc_str = "Hardcore ON";
     else
-        hc_str = "hardcore off";
+        hc_str = "Hardcore OFF";
 
-    llDialog(av, "RLV Relay\nMode: "+mode_str+"\nHardcore: "+hc_str, btns, chan);
+    llDialog(av, "RLV Relay\nMode: "+mode_str+"\n"+hc_str, btns, chan);
+}
+list mode_menu_btns()
+{
+    // Bottom row: Cancel centered
+    list btns = [ " ", "Cancel", " " ];
+    // Row above: Set Off, Set On, Hardcore toggle
+    string hc_btn;
+    if (g_hardcore == TRUE) hc_btn = "Hardcore OFF";
+    else hc_btn = "Hardcore ON";
+    btns += [ "Set Off", "Set On", hc_btn ];
+    return btns;
 }
 show_mode_menu(key av, integer chan)
 {
     string mode_str = "Current mode: ";
-    if(g_relay_mode == 1) mode_str += "ASK";
-    else if(g_relay_mode == 2) mode_str += "AUTO";
+    if(g_mode == 1) mode_str += "ON";
+    else if(g_mode == 2) mode_str += "HARDCORE";
     else mode_str += "OFF";
     string hc_str = "\nHardcore: ";
-    if(g_hardcore == TRUE) hc_str += "ON"; else hc_str += "off";
-    list btns = [ "Set Off", "Set Ask", "Set Auto" ];
-    if (g_hardcore == TRUE)
-        btns += [ "Hardcore OFF" ];
-    else
-        btns += [ "Hardcore ON" ];
-    btns += [ "Cancel" ];
-    while(llGetListLength(btns)%3!=0) btns += [ " " ];
+    if(g_hardcore == TRUE) hc_str += "ON"; else hc_str += "OFF";
+    list btns = mode_menu_btns();
     s_set(av, 0, "", llGetUnixTime()+60.0, "mode_menu", "", "", "", chan);
     llDialog(av, mode_str+hc_str, btns, chan);
 }
@@ -331,8 +234,8 @@ show_mode_info_dialog(key av, integer mode, integer chan)
 {
     string txt = "Relay mode is now ";
     if(mode == MODE_OFF) txt += "OFF.";
-    else if(mode == MODE_CONSENT) txt += "ASK.";
-    else if(mode == MODE_AUTO) txt += "AUTO.";
+    else if(mode == MODE_ON) txt += "ON.";
+    else if(mode == MODE_HARDCORE) txt += "HARDCORE.";
     llDialog(av, txt, [ " ", "OK", " " ], chan);
 }
 show_hardcore_changed_info(key av, integer hc, integer chan)
@@ -383,7 +286,6 @@ unbind_all()
     {
         key obj          = llList2Key(g_relays, i);
         integer session_chan = llList2Integer(g_relays, i + 2);
-        // proper 4-arg call: cmd="!release", ok=1
         send_relay_response(obj, session_chan, "!release", 1);
         llOwnerSay("@clear");
         if (DEBUG)
@@ -392,7 +294,6 @@ unbind_all()
         }
     }
     clear_relays();
-    //save_state(); // Call as needed if GUH/core expects it
 }
 timeout_check()
 {
@@ -406,20 +307,18 @@ timeout_check()
 }
 save_state()
 {
-    string msg = "relay_save|" + (string)g_relay_mode + "|" + (string)g_hardcore;
+    string msg = "relay_save|" + (string)g_mode + "|" + (string)g_hardcore;
     llMessageLinked(LINK_THIS, 530, msg, NULL_KEY);
     if (DEBUG) llOwnerSay("[Relay] State saved: " + msg);
 }
 load_state(list p)
 {
-    g_relay_mode = (integer)llList2String(p,1);
-    g_hardcore   = (integer)llList2String(p,2);
-    if (DEBUG) llOwnerSay("[Relay] State loaded: mode=" + (string)g_relay_mode + " hc=" + (string)g_hardcore);
+    g_mode = (integer)llList2String(p,1);
+    g_hardcore = (integer)llList2String(p,2);
+    if (DEBUG) llOwnerSay("[Relay] State loaded: mode=" + (string)g_mode + " hc=" + (string)g_hardcore);
 }
 
-/* =============================================================
-   BLOCK: MAIN EVENT LOOP
-   ============================================================= */
+/* ========== MAIN EVENT LOOP ========== */
 default
 {
     state_entry()
@@ -498,7 +397,7 @@ default
             handle_relay_command(av, llKey2Name(av), session_chan, rlv_msg);
             return;
         }
-        // == Menu system: UI code untouched ==
+        // == Menu system ==
         list s = s_get(av);
         if(llGetListLength(s)==0) return;
         if(chan != llList2Integer(s,8)) return;
@@ -529,25 +428,20 @@ default
         if(ctx == "mode_menu")
         {
             if(msg == "Set Off"){
-                g_relay_mode=MODE_OFF; save_state();
-                show_mode_info_dialog(av, g_relay_mode, chan);
+                g_mode=MODE_OFF; g_hardcore=FALSE; save_state();
+                show_mode_info_dialog(av, g_mode, chan);
                 s_clear(av); return;
             }
-            if(msg == "Set Ask"){
-                g_relay_mode=MODE_CONSENT; save_state();
-                show_mode_info_dialog(av, g_relay_mode, chan);
-                s_clear(av); return;
-            }
-            if(msg == "Set Auto"){
-                g_relay_mode=MODE_AUTO; save_state();
-                show_mode_info_dialog(av, g_relay_mode, chan);
+            if(msg == "Set On"){
+                g_mode=MODE_ON; g_hardcore=FALSE; save_state();
+                show_mode_info_dialog(av, g_mode, chan);
                 s_clear(av); return;
             }
             if(msg == "Hardcore ON"){
                 show_hardcore_confirm_owner(av, chan); return;
             }
             if(msg == "Hardcore OFF"){
-                g_hardcore = FALSE; save_state();
+                g_hardcore = FALSE; g_mode=MODE_ON; save_state();
                 show_hardcore_changed_info(av, g_hardcore, chan);
                 if(g_owner != NULL_KEY && llGetOwner() != av) {
                     llDialog(llGetOwner(), "Hardcore relay mode has been DISABLED by your owner.", [ " ", "OK", " " ], chan);
@@ -561,6 +455,7 @@ default
             // Owner confirms enabling hardcore
             if(msg == "OK") {
                 g_hardcore = TRUE;
+                g_mode = MODE_HARDCORE;
                 save_state();
                 show_hardcore_changed_info(av, g_hardcore, chan);
                 if(g_owner != NULL_KEY && llGetOwner() != av) {
@@ -570,28 +465,6 @@ default
                 return;
             }
             if(msg == "Cancel"){ s_clear(av); return; }
-        }
-        if(ctx == "consent")
-        {
-            // Patch: retrieve and use correct sender & session_chan from param
-            list args = llParseString2List(param, ["|"], []);
-            key obj = (key)llList2String(args, 0);
-            string name = llList2String(args, 1);
-            string origmsg = llList2String(args, 2);
-            integer session_chan = (integer)llList2String(args, 3);
-            if(msg == "Allow"){
-                add_relay_object(obj, name, session_chan);
-                store_restriction(obj, origmsg);
-                llOwnerSay(origmsg);
-                send_relay_response(obj, session_chan, origmsg, 1);
-                if(DEBUG) llOwnerSay("[RELAY] Consent allowed " + name + " for session " + (string)session_chan);
-            }
-            else
-            {
-                send_relay_response(obj, session_chan, origmsg, 0);
-            }
-            s_clear(av);
-            return;
         }
         if(ctx == "unbind_confirm")
         {
@@ -623,8 +496,7 @@ default
         }
     }
 
-    timer(){ timeout_check(); }
+    timer()
+    { timeout_check(); }
 }
-/* =============================================================
-   BLOCK: MAIN EVENT LOOP END
-   ============================================================= */
+/* ==================== END ==================== */
