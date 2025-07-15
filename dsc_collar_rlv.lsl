@@ -1,427 +1,314 @@
 /* =============================================================
    TITLE: ds_collar_rlv - RLV Suite/Control Plugin (Apps Menu)
-   VERSION: 1.0.4 (Dialog truncation-safe matching, full script)
-   REVISION: 2025-07-12
+   VERSION: 1.2.2 (Speech label fix, Strict LSL)
+   REVISION: 2025-07-15
    ============================================================= */
 
-/* =============================================================
-   BLOCK: GLOBAL VARIABLES & CONFIG BEGIN
-   ============================================================= */
 integer DEBUG = TRUE;
 
-integer page_size = 6;
-float   dialog_timeout = 180.0;
-integer RLV_CHANNEL = 0; // Use 0 for local RLV; relay channel if necessary
+integer ACL_OWNER    = 1; // LV1
+integer ACL_TRUSTEE  = 2; // LV2
+integer ACL_WEARER   = 3; // LV3
 
-// ACL info (set via state_sync message)
-key     g_owner = NULL_KEY;
-list    g_trustees = [];
-list    g_blacklist = [];
+integer MAX_RESTRICTIONS = 32; // Arbitrary large
+
+// -- Restriction categories --
+list CAT_INV    = [ "@detachall", "@addoutfit", "@remoutfit", "@remattach", "@addattach", "@attachall", "@showinv", "@viewnote", "@viewscript" ];
+list CAT_SPEECH = [ "@sendchat", "@recvim", "@sendim", "@startim", "@chatshout", "@chatwhisper" ];
+list CAT_TRAVEL = [ "@tptlm", "@tploc", "@tplure" ];
+list CAT_OTHER  = [ "@edit", "@rez", "@touchall", "@touchworld", "@accepttp", "@shownames", "@sit", "@unsit", "@stand" ];
+
+list LABEL_INV    = [ "Det. All:", "+ Outfit:", "- Outfit:", "- Attach:", "+ Attach:", "Att. All:", "Inv:", "Notes:", "Scripts:" ];
+list LABEL_SPEECH = [ "Chat:", "Recv IM:", "Send IM:", "Start IM:", "Shout:", "Whisper:" ]; // << FIXED HERE
+list LABEL_TRAVEL = [ "Map TP:", "Loc. TP:", "TP:" ];
+list LABEL_OTHER  = [ "Edit:", "Rez:", "Touch:", "Touch Wld:", "OK TP:", "Names:", "Sit:", "Unsit:", "Stand:" ];
+
+list g_restrictions = []; // List of active restrictions
+
+// Session/UI/ACL
+list g_sessions;
+
+key g_owner = NULL_KEY;
+list g_trustees = [];
+list g_blacklist = [];
 integer g_public_access = FALSE;
 
-// Privileges state
-integer g_owner_im = TRUE;
-integer g_owner_tp = TRUE;
-integer g_trustee_im = TRUE;
-integer g_trustee_tp = FALSE;
+string PLUGIN_NAME = "RLV";
 
-// Session cache: [av, page, csv, expiry, ctx, param, step, menubtns, menuctx, chan, listen]
-list    g_sessions;
+// Pagination constants
+integer DIALOG_PAGE_SIZE = 9;
 
-/* --- Sit Sensor Globals --- */
-integer g_sit_sensor_active = FALSE;
-key     g_sit_target_av = NULL_KEY;
-integer g_sit_chan = 0;
-list    g_sit_targets = []; // [key, name, key, name...]
-
-/* =============================================================
-   BLOCK: GLOBAL VARIABLES & CONFIG END
-   ============================================================= */
-
-/* =============================================================
-   BLOCK: SESSION HELPERS BEGIN
-   ============================================================= */
+/* ----------- Session helpers ----------- */
 integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
+integer g_idx(list userlist, key testid) { return llListFindList(userlist, [testid]); }
+integer restriction_idx(string restr_cmd) { return llListFindList(g_restrictions, [restr_cmd]); }
 
-integer s_set(key av, integer page, string csv, float expiry, string ctx, string param, string step, string menubtns, string menuctx, integer chan)
-{
-    integer i = s_idx(av);
-    if (~i) {
-        integer old = llList2Integer(g_sessions, i+10);
-        if (old != -1) llListenRemove(old);
-        g_sessions = llDeleteSubList(g_sessions, i, i+10);
+integer get_acl(key user_id) {
+    if (g_idx(g_blacklist, user_id) != -1) return 5;
+    if (user_id == g_owner) return ACL_OWNER;
+    if (user_id == llGetOwner()) {
+        if (g_owner == NULL_KEY) return ACL_OWNER;
+        return ACL_WEARER;
     }
-    integer lh = llListen(chan, "", av, "");
-    g_sessions += [av, page, csv, expiry, ctx, param, step, menubtns, menuctx, chan, lh];
+    if (g_idx(g_trustees, user_id) != -1) return ACL_TRUSTEE;
+    if (g_public_access == TRUE) return 4;
+    return 5;
+}
+
+/* --------- Restriction logic ---------- */
+toggle_restriction(string restr_cmd, integer acl) {
+    integer ridx = restriction_idx(restr_cmd);
+    if (ridx != -1)
+    {
+        g_restrictions = llDeleteSubList(g_restrictions, ridx, ridx);
+        // REMOVE restriction: Use correct removal command!
+        llOwnerSay(restr_cmd + "=rem");
+        if (DEBUG) llOwnerSay("[RLV] REMOVED: " + restr_cmd + "=rem");
+    }
+    else if (llGetListLength(g_restrictions) < MAX_RESTRICTIONS)
+    {
+        g_restrictions += [ restr_cmd ];
+        // APPLY restriction: Use =n for most (per your API rule)
+        llOwnerSay(restr_cmd + "=n");
+        if (DEBUG) llOwnerSay("[RLV] FORCED: " + restr_cmd + "=n");
+    }
+    if (DEBUG) llOwnerSay("[RLV] Restriction list now: " + llDumpList2String(g_restrictions, ","));
+}
+
+
+/* --------- Label helpers ---------- */
+string get_label_for_command(string cmd, list cat_cmds, list cat_labels)
+{
+    integer idx = llListFindList(cat_cmds, [cmd]);
+    if (idx != -1) {
+        return llList2String(cat_labels, idx);
+    }
+    return cmd + ":"; // fallback
+}
+
+string get_short_label(string cmd, integer is_active, list cat_cmds, list cat_labels)
+{
+    string label = get_label_for_command(cmd, cat_cmds, cat_labels);
+    if (is_active) label += "OFF";
+    else label += "ON";
+    return label; // No padding!
+}
+
+// Map dialog label back to command (ON/OFF)
+string label_to_command(string label, list cat_cmds, list cat_labels)
+{
+    integer i = 0;
+    integer n = llGetListLength(cat_labels);
+    while (i < n) {
+        string base_label = llList2String(cat_labels, i);
+        if (label == base_label + "ON" || label == base_label + "OFF") {
+            return llList2String(cat_cmds, i);
+        }
+        ++i;
+    }
+    return "";
+}
+
+/* --------- CATEGORY UTILS ---------- */
+list get_category_list(string catname)
+{
+    if (catname == "Inventory") return CAT_INV;
+    if (catname == "Speech") return CAT_SPEECH;
+    if (catname == "Travel") return CAT_TRAVEL;
+    if (catname == "Other") return CAT_OTHER;
+    return [];
+}
+list get_category_labels(string catname)
+{
+    if (catname == "Inventory") return LABEL_INV;
+    if (catname == "Speech") return LABEL_SPEECH;
+    if (catname == "Travel") return LABEL_TRAVEL;
+    if (catname == "Other") return LABEL_OTHER;
+    return [];
+}
+
+/* --------- PAGINATION: category dialog --------- */
+list make_category_buttons(list cat_cmds, list cat_labels, integer page)
+{
+    list btns = [];
+    integer count = llGetListLength(cat_cmds);
+    integer start = page * DIALOG_PAGE_SIZE;
+    integer end = start + DIALOG_PAGE_SIZE - 1;
+    if (end >= count) end = count - 1;
+    integer i;
+    for (i = start; i <= end; ++i) {
+        if (i < count) {
+            string cmd = llList2String(cat_cmds, i);
+            integer restr_on = restriction_idx(cmd) != -1;
+            btns += [ get_short_label(cmd, restr_on, cat_cmds, cat_labels) ];
+        }
+    }
+    // Fill up to exactly DIALOG_PAGE_SIZE (9) with blanks
+    while (llGetListLength(btns) < DIALOG_PAGE_SIZE) btns += [ " " ];
+    // Never return more than 9
+    if (llGetListLength(btns) > DIALOG_PAGE_SIZE) btns = llList2List(btns, 0, DIALOG_PAGE_SIZE - 1);
+    return btns;
+}
+
+/* --------- Dialogs/UI ---------- */
+show_main_menu(key av, integer chan) {
+    integer acl = get_acl(av);
+    if (acl > ACL_WEARER) return;
+    // Place [Inventory] [Speech] [Travel] on row 3; [Other] [Safeword] [Exceptions] on row 2; [    ] [Back] [    ] on row 1
+    list btns = [ " ", "    Back    ", " ",
+                  "Other", "Safeword", "Exceptions",
+                  "Inventory", "Speech", "Travel" ];
+    // No need to pad to 9, we are at 9
+    s_set(av, 0, "", llGetUnixTime()+180.0, "main", "", "", "", chan);
+    if (DEBUG) llOwnerSay("[DEBUG] show_main_menu → " + (string)av + " chan=" + (string)chan + " btns=" + llDumpList2String(btns, ","));
+    llDialog(av, "RLV Restriction Menu:\nSelect a category:", btns, chan);
+}
+
+// Paginated category menu
+show_category_menu(key av, integer chan, string catname, integer page)
+{
+    integer acl = get_acl(av);
+    if (acl > ACL_WEARER) return;
+    list catlist = get_category_list(catname);
+    list catlabels = get_category_labels(catname);
+
+    integer num_items = llGetListLength(catlist);
+    integer max_page = (num_items - 1) / DIALOG_PAGE_SIZE;
+
+    string prev = " ";
+    string next = " ";
+    if (page > 0) prev = "<<";
+    if (page < max_page) next = ">>";
+
+    list btns = [ prev, "    Back    ", next ];
+    btns += make_category_buttons(catlist, catlabels, page);
+
+    if (DEBUG) llOwnerSay("[DEBUG] show_category_menu: cat=" + catname + " page=" + (string)page + " btns=" + llDumpList2String(btns, ","));
+    s_set(av, page, catname, llGetUnixTime()+120.0, "cat", catname + "|" + (string)page, "", llDumpList2String(catlist, ","), chan);
+    llDialog(av, catname + " Restrictions:\nClick to toggle.", btns, chan);
+}
+
+/* --------- Session helpers ---------- */
+integer s_set(key av, integer page, string csv, float expiry, string ctx, string param, string step, string menucsv, integer dialog_chan)
+{
+    integer i = s_idx(av); integer old = -1;
+    if (~i) { old = llList2Integer(g_sessions, i+9); g_sessions = llDeleteSubList(g_sessions, i, i+9);}
+    if (old != -1) llListenRemove(old);
+    integer lh = llListen(dialog_chan, "", av, "");
+    g_sessions += [av, page, csv, expiry, ctx, param, step, menucsv, dialog_chan, lh];
     return TRUE;
 }
 integer s_clear(key av)
 {
     integer i = s_idx(av);
     if (~i) {
-        integer old = llList2Integer(g_sessions, i+10);
+        integer old = llList2Integer(g_sessions, i+9);
         if (old != -1) llListenRemove(old);
-        g_sessions = llDeleteSubList(g_sessions, i, i+10);
+        g_sessions = llDeleteSubList(g_sessions, i, i+9);
     }
     return TRUE;
 }
 list s_get(key av)
 {
     integer i = s_idx(av);
-    if (~i) return llList2List(g_sessions, i, i+10);
+    if (~i) return llList2List(g_sessions, i, i+9);
     return [];
 }
-
-// Standard ACL mapping: 1=Owner/Unowned wearer, 2=Trustee, 3=Owned wearer, 4=Public, 5=Blacklist
-integer get_acl(key av)
+timeout_check()
 {
-    if (llListFindList(g_blacklist, [av]) != -1) return 5;
-    if (av == g_owner) return 1;
-    if (llListFindList(g_trustees, [av]) != -1) return 2;
-    if (av == llGetOwner()) {
-        if (g_owner == NULL_KEY) return 1; // wearer, unowned = LV1
-        return 3; // wearer, owned = LV3
+    integer now = llGetUnixTime();
+    integer i = 0;
+    while(i < llGetListLength(g_sessions)){
+        if(now > llList2Float(g_sessions,i+3))
+            s_clear(llList2Key(g_sessions,i));
+        else i += 10;
     }
-    if (g_public_access == TRUE) return 4;
-    return 4;
-}
-/* =============================================================
-   BLOCK: SESSION HELPERS END
-   ============================================================= */
-
-/* =============================================================
-   BLOCK: MAIN MENU/UI BUILDERS BEGIN
-   ============================================================= */
-
-list rlv_feature_btns(integer acl)
-{
-    // 0-2 = nav row; rest is menu (bottom up, left to right)
-    if (acl == 3) return [ " ", "Main", " ", " ", " ", "SOS Release", " "," ", " " ];
-    return [ " ", "Main", " ", "Restrictions", "Privileges", "Sit", "Unsit", " ", " " ];
-}
-list rlv_feature_ctxs(integer acl)
-{
-    if (acl == 3) return [ " ", "main", " ", " ", " ", "sos", " ", " ", " " ];
-    return [ " ", "main", " ", "restrict", "priv", "sit", "unsit", " ", " " ];
 }
 
-show_rlv_menu(key av, integer page, integer chan, integer acl)
-{
-    if (DEBUG) llOwnerSay("[DEBUG RLV] show_rlv_menu av=" + (string)av + " page=" + (string)page + " chan=" + (string)chan + " acl=" + (string)acl);
-    list buttons = rlv_feature_btns(acl);
-    list menuctx = rlv_feature_ctxs(acl);
-
-    s_set(av, page, "", llGetUnixTime() + dialog_timeout,
-          "main", "", "", llDumpList2String(buttons, ","), llDumpList2String(menuctx, ","), chan);
-
-    if (DEBUG) llOwnerSay("[DEBUG RLV] menu btns: " + llDumpList2String(buttons,","));
-    if (DEBUG) llOwnerSay("[DEBUG RLV] menu ctx: " + llDumpList2String(menuctx,","));
-
-    string header;
-    if (acl == 3)
-        header = "You are wearing the collar and are owned.\nYou can use SOS Release only.";
-    else
-        header = "RLV Suite - Select an option:";
-    llDialog(av, header, buttons, chan);
+/* --------- Plugin registration --------- */
+register_plugin() {
+    llMessageLinked(LINK_THIS, 500, "register|1011|" + PLUGIN_NAME + "|3|apps_rlvrestrict", NULL_KEY);
 }
 
-// Permissions menus
-show_ownerp_menu(key av, integer chan)
-{
-    string im_txt;
-    string tp_txt;
-    if (g_owner_im) im_txt = "IM: ON"; else im_txt = "IM: OFF";
-    if (g_owner_tp) tp_txt = "TP: ON"; else tp_txt = "TP: OFF";
-    list btns = [ " ", "Main", " ", im_txt, tp_txt, " ", " ", " ", " " ];
-    list ctxs = [ " ", "main", " ", "owner_im", "owner_tp", " ", " ", " ", " " ];
-
-    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "ownerp", "", "", llDumpList2String(btns, ","), llDumpList2String(ctxs, ","), chan);
-
-    string info = "Owner Permissions:\nIM: ";
-    if (g_owner_im) info += "ON"; else info += "OFF";
-    info += "\nTP: ";
-    if (g_owner_tp) info += "ON"; else info += "OFF";
-    llDialog(av, info, btns, chan);
-}
-
-show_trustp_menu(key av, integer chan)
-{
-    string im_txt;
-    string tp_txt;
-    if (g_trustee_im) im_txt = "IM: ON"; else im_txt = "IM: OFF";
-    if (g_trustee_tp) tp_txt = "TP: ON"; else tp_txt = "TP: OFF";
-    list btns = [ " ", "Main", " ", im_txt, tp_txt, " ", " ", " ", " " ];
-    list ctxs = [ " ", "main", " ", "trustee_im", "trustee_tp", " ", " ", " ", " " ];
-
-    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "trustp", "", "", llDumpList2String(btns, ","), llDumpList2String(ctxs, ","), chan);
-
-    string info = "Trustee Permissions:\nIM: ";
-    if (g_trustee_im) info += "ON"; else info += "OFF";
-    info += "\nTP: ";
-    if (g_trustee_tp) info += "ON"; else info += "OFF";
-    llDialog(av, info, btns, chan);
-}
-
-show_sos_menu(key av, integer chan)
-{
-    list btns = [ " ", "Main", " ", " ", " ", "SOS Release", " ", " ", " " ];
-    list ctxs = [ " ", "main", " ", " ", " ", "sos", " ", " ", " " ];
-
-    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "sos", "", "", llDumpList2String(btns, ","), llDumpList2String(ctxs, ","), chan);
-
-    string info = "Release all owner-set restrictions?\nThis will notify your owner.";
-    llDialog(av, info, btns, chan);
-}
-
-show_sos_confirm(key av, integer chan)
-{
-    list btns = [ "Cancel", "OK", " ", " ", " ", " ", " ", " ", " " ];
-    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "sos_confirm", "", "", llDumpList2String(btns, ","), llDumpList2String(btns, ","), chan);
-    llDialog(av, "Are you sure you want to release all owner-set RLV restrictions?", btns, chan);
-}
-
-/* --- Force Sit/Stand UI and Helpers --- */
-sit_scan(key av, integer chan)
-{
-    g_sit_sensor_active = TRUE;
-    g_sit_target_av = av;
-    g_sit_chan = chan;
-    g_sit_targets = [];
-    if (DEBUG) llOwnerSay("[DEBUG RLV] sit_scan() triggered by av=" + (string)av + ", starting sensor...");
-    llSensor("", NULL_KEY, ACTIVE|PASSIVE, 5.0, PI);
-}
-
-show_sit_dialog(key av, integer chan)
-{
-    integer N = llGetListLength(g_sit_targets) / 2;
-    if (DEBUG) llOwnerSay("[DEBUG RLV] show_sit_dialog, targets=" + (string)N);
-    list btns = [ " ", "Main", " " ]; // nav row
-    list ctxs = [ " ", "main", " " ]; // nav row
-    integer i;
-    for (i = 0; i < N; ++i)
-    {
-        string name = llList2String(g_sit_targets, i*2+1);
-        // TRIM to 24 chars for dialog label
-        if (llStringLength(name) > 24) name = llGetSubString(name, 0, 23);
-        btns += [ name ];
-        ctxs += [ llList2Key(g_sit_targets, i*2) ];
-    }
-    while (llGetListLength(btns) < 9) { btns += [ " " ]; ctxs += [ " " ]; }
-    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "sit_targets", "", "", llDumpList2String(btns, ","), llDumpList2String(ctxs, ","), chan);
-    llDialog(av, "Select an object for the wearer to sit on:", btns, chan);
-}
-
-do_force_stand(key av)
-{
-    llRegionSayTo(llGetOwner(), RLV_CHANNEL, "@unsit=force");
-    llDialog(av, "Wearer has been forced to stand.", [ " ", "Main", " ", " ", " ", " ", " ", " ", " " ], llList2Integer(s_get(av),9));
-    s_clear(av);
-}
-
-do_force_sit(key av, key target_obj)
-{
-    llRegionSayTo(llGetOwner(), RLV_CHANNEL, "@sit:" + (string)target_obj + "=force");
-    llDialog(av, "Wearer has been forced to sit on the selected object.", [ " ", "Main", " ", " ", " ", " ", " ", " ", " " ], llList2Integer(s_get(av),9));
-    s_clear(av);
-}
-
-/* =============================================================
-   BLOCK: MAIN MENU/UI BUILDERS END
-   ============================================================= */
-
-/* =============================================================
-   BLOCK: MAIN EVENT LOOP BEGIN
-   ============================================================= */
+/* ========== MAIN EVENT LOOP ========== */
 default
 {
     state_entry()
     {
+        register_plugin();
         llSetTimerEvent(1.0);
-        llMessageLinked(LINK_THIS, 500, "register|1015|RLV|3|apps_rlv", NULL_KEY);
-        if (DEBUG) llOwnerSay("[RLV] Plugin ready.");
-    }
-
-    sensor(integer detected)
-    {
-        if (!g_sit_sensor_active) return;
-        g_sit_sensor_active = FALSE;
-        g_sit_targets = [];
-        if (DEBUG) llOwnerSay("[DEBUG RLV] sensor event, detected=" + (string)detected);
-        integer i;
-        for (i = 0; i < detected; ++i)
-        {
-            key id = llDetectedKey(i);
-            string name = llDetectedName(i);
-            if (id != llGetKey())
-            {
-                g_sit_targets += [ id, name ];
-                if (DEBUG) llOwnerSay("[DEBUG RLV] sensor found: " + name + " (" + (string)id + ")");
-            }
-        }
-        show_sit_dialog(g_sit_target_av, g_sit_chan);
+        if(DEBUG) llOwnerSay("[RLV] Plugin ready.");
     }
 
     link_message(integer sn, integer num, string str, key id)
     {
-        if (num == 510)
+        if(num == 510)
         {
             list p = llParseString2List(str, ["|"], []);
-            if (llList2String(p, 0) == "apps_rlv" && llGetListLength(p) >= 3)
+            if(llList2String(p,0) == "apps_rlvrestrict" && llGetListLength(p) >= 3)
             {
-                key av = (key)llList2String(p, 1);
-                integer chan = (integer)llList2String(p, 2);
-                integer acl = get_acl(av);
-
-                if (acl != 1 && acl != 2 && acl != 3) {
-                    llDialog(av, "Access denied: Only owners, trustees, and wearers may use RLV Suite controls.", [ " ", "OK", " ", " ", " ", " ", " ", " ", " " ], chan);
-                    return;
-                }
-                show_rlv_menu(av, 0, chan, acl);
-            }
-        }
-        if (num == 520)
-        {
-            list p = llParseString2List(str, ["|"], []);
-            if (llGetListLength(p) == 8 && llList2String(p, 0) == "state_sync")
-            {
-                g_owner = (key)llList2String(p, 1);
-                string trust_csv = llList2String(p, 3);
-                string bl_csv = llList2String(p, 5);
-                string pub_str = llList2String(p, 6);
-                if (trust_csv == " ") g_trustees = [];
-                else g_trustees = llParseString2List(trust_csv, [","], []);
-                if (bl_csv == " ") g_blacklist = [];
-                else g_blacklist = llParseString2List(bl_csv, [","], []);
-                if (pub_str == "1") g_public_access = TRUE;
-                else g_public_access = FALSE;
+                key av = (key)llList2String(p,1);
+                integer chan = (integer)llList2String(p,2);
+                show_main_menu(av, chan);
             }
         }
     }
 
     listen(integer chan, string nm, key av, string msg)
     {
-        if (DEBUG) llOwnerSay("[DEBUG RLV] listen event: av=" + (string)av + " msg=" + msg);
+        list sess = s_get(av);
+        if(llGetListLength(sess) == 0) return;
+        if(chan != llList2Integer(sess,8)) return;
+        string ctx = llList2String(sess,4);
+        string param = llList2String(sess,5);
 
-        list s = s_get(av);
-        if (llGetListLength(s) == 0) return;
-        if (chan != llList2Integer(s, 9)) return;
-
-        string menubtnscsv = llList2String(s, 7);
-        string menuctxcsv  = llList2String(s, 8);
-        list buttons = llParseString2List(menubtnscsv, [","], []);
-        list menuctx = llParseString2List(menuctxcsv, [","], []);
-
-        string ctx   = llList2String(s, 4);
         integer acl = get_acl(av);
 
-        if (DEBUG) llOwnerSay("[DEBUG RLV] listen: msg=" + msg + " menuctx=" + llDumpList2String(menuctx,",") + " ctx=" + ctx + " acl=" + (string)acl);
-
-        integer idx = llListFindList(buttons, [msg]);
-        if (DEBUG) llOwnerSay("[DEBUG RLV] main menu idx=" + (string)idx);
-
-        // NAV
-        if (msg == "Main")
+        if(ctx == "main")
         {
-            llMessageLinked(LINK_THIS, 510, "main|" + (string)av + "|" + (string)chan, NULL_KEY);
-            s_clear(av);
-            return;
-        }
-        if (msg == "Cancel")
-        {
-            s_clear(av);
-            return;
-        }
-
-        // Sit targets (by index 3..8)
-        if (ctx == "sit_targets")
-        {
-            integer clicked = -1;
-            integer i;
-            for (i = 3; i < 9; ++i)
-            {
-                string btn_label = llList2String(buttons, i);
-                string user_label = msg;
-                // Both should be <=24 chars (safety)
-                if (llStringLength(btn_label) > 24) btn_label = llGetSubString(btn_label, 0, 23);
-                if (llStringLength(user_label) > 24) user_label = llGetSubString(user_label, 0, 23);
-                if (btn_label == user_label)
-                {
-                    clicked = i;
-                    i = 9; // jump out of loop (LSL-legal)
-                }
-            }
-            if (DEBUG) llOwnerSay("[DEBUG RLV] sit_targets: clicked=" + (string)clicked + ", msg=" + msg);
-            if (clicked != -1)
-            {
-                key target = (key)llList2String(menuctx, clicked);
-                if (DEBUG) llOwnerSay("[DEBUG RLV] sit_targets: target=" + (string)target);
-                if (target != "" && target != " " && llStringLength((string)target) == 36)
-                {
-                    do_force_sit(av, target);
-                    return;
-                }
-                else
-                {
-                    if (DEBUG) llOwnerSay("[DEBUG RLV] sit_targets: invalid target UUID: '" + (string)target + "'");
-                }
-            }
-            else
-            {
-                if (DEBUG) llOwnerSay("[DEBUG RLV] sit_targets: No button match for '" + msg + "'");
-            }
-        }
-
-        // Main menu actions (by index)
-        if (idx != -1)
-        {
-            string act = llList2String(menuctx, idx);
-
-            if (acl == 3 && ctx == "main" && act == "sos")
-            {
-                show_sos_confirm(av, chan);
+            if(msg == "Inventory"){ show_category_menu(av, chan, "Inventory", 0); return; }
+            if(msg == "Speech"){ show_category_menu(av, chan, "Speech", 0); return; }
+            if(msg == "Travel"){ show_category_menu(av, chan, "Travel", 0); return; }
+            if(msg == "Other"){ show_category_menu(av, chan, "Other", 0); return; }
+            if(msg == "Exceptions"){ /* exceptions */ return; }
+            if(msg == "Safeword" && acl <= ACL_WEARER){
+                g_restrictions = [];
+                llOwnerSay("@clear");
+                llDialog(av, "All restrictions cleared by Safeword.", ["    Back    "], chan);
                 return;
             }
-            if (ctx == "sos_confirm" && msg == "OK")
-            {
-                llDialog(av, "All owner-set restrictions have been released.\nYour owner has been notified.", [ " ", "OK", " ", " ", " ", " ", " ", " ", " " ], chan);
+            if(msg == "    Back    "){
+                llMessageLinked(LINK_THIS, 510, "apps|" + (string)av + "|" + (string)chan, NULL_KEY);
                 s_clear(av);
                 return;
             }
-            if ((acl == 1 || acl == 2) && ctx == "main")
+        }
+        if(ctx == "cat")
+        {
+            // param: catname|page
+            list params = llParseString2List(param, ["|"], []);
+            string catname = llList2String(params, 0);
+            integer page = (integer)llList2String(params, 1);
+
+            list cat_cmds = get_category_list(catname);
+            list cat_labels = get_category_labels(catname);
+            integer num_items = llGetListLength(cat_cmds);
+            integer max_page = (num_items - 1) / DIALOG_PAGE_SIZE;
+
+            if(msg == "    Back    "){ show_main_menu(av, chan); return; }
+            if(msg == "<<" && page > 0){ show_category_menu(av, chan, catname, page - 1); return; }
+            if(msg == ">>" && page < max_page){ show_category_menu(av, chan, catname, page + 1); return; }
+
+            string cmd = label_to_command(msg, cat_cmds, cat_labels);
+            if(cmd != "" && acl <= ACL_TRUSTEE)
             {
-                if (act == "restrict") { llDialog(av, "RLV Restrictions UI - [stub]", [ " ", "OK", " ", " ", " ", " ", " ", " ", " " ], chan); return; }
-                if (act == "priv")     { show_ownerp_menu(av, chan); return; }
-                if (act == "sit")      { sit_scan(av, chan); return; }
-                if (act == "unsit")    { do_force_stand(av); return; }
-            }
-            if (ctx == "ownerp")
-            {
-                if (act == "owner_im") { g_owner_im = !g_owner_im; show_ownerp_menu(av, chan); return; }
-                if (act == "owner_tp") { g_owner_tp = !g_owner_tp; show_ownerp_menu(av, chan); return; }
-                if (act == "main") {
-                    llMessageLinked(LINK_THIS, 510, "main|" + (string)av + "|" + (string)chan, NULL_KEY);
-                    s_clear(av);
-                    return;
-                }
-            }
-            if (ctx == "trustp")
-            {
-                if (act == "trustee_im") { g_trustee_im = !g_trustee_im; show_trustp_menu(av, chan); return; }
-                if (act == "trustee_tp") { g_trustee_tp = !g_trustee_tp; show_trustp_menu(av, chan); return; }
-                if (act == "main") {
-                    llMessageLinked(LINK_THIS, 510, "main|" + (string)av + "|" + (string)chan, NULL_KEY);
-                    s_clear(av);
-                    return;
-                }
+                if (DEBUG) llOwnerSay("[DEBUG] Clicked label: " + msg + " => cmd: " + cmd);
+                toggle_restriction(cmd, acl);
+                show_category_menu(av, chan, catname, page);
+                return;
             }
         }
     }
-
-    timer()
-    {
-        // Timeout/cleanup, if needed
-    }
+    timer(){ timeout_check(); }
 }
-/* =============================================================
-   BLOCK: MAIN EVENT LOOP END
-   ============================================================= */
+/* ==================== END ==================== */
