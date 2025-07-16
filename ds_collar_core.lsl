@@ -1,12 +1,9 @@
 /* =============================================================
    TITLE: ds_collar_core - Core logic                             
-   VERSION: 1.1
-   REVISION: 2025-07-10
+   VERSION: 1.2 (RLV submenu support)
+   REVISION: 2025-07-15
    ============================================================= */
 
-/* =============================================================
-   BLOCK: GLOBAL VARIABLES BEGIN
-   ============================================================= */
 integer DEBUG = TRUE;
 
 list    g_plugins;
@@ -23,18 +20,14 @@ list    g_blacklist          = [];
 integer g_public_access      = FALSE;
 integer g_locked             = FALSE;
 
-/* These are kept global for submenu handling */
 list    g_apps_btns;
 list    g_apps_ctxs;
+list    g_rlv_btns;
+list    g_rlv_ctxs;
+
 string  g_relay_state         = "";
-/* =============================================================
-   BLOCK: GLOBAL VARIABLES END
-   ============================================================= */
 
-
-/* =============================================================
-   BLOCK: SMALL HELPERS BEGIN
-   ============================================================= */
+/* --------- Small helpers --------- */
 integer s_idx(key av) { 
     return llListFindList(g_sessions, [av]); 
 }
@@ -68,33 +61,20 @@ list sess_get(key av){
     if(~i) return llList2List(g_sessions, i, i+9);
     return [];
 }
-/*  ACL:
-    0 = backend/system (not used in touch/menu, reserved)
-    1 = Owner
-    2 = Trustee
-    3 = Wearer
-    4 = Public/Guest
-    5 = No Access (Denied, Blacklisted, etc)
-*/
+
 integer get_acl(key av){
-    if(g_idx(g_blacklist, av) != -1) return 5; // No Access (blacklist)
-    if(av == g_owner)             return 1;    // Owner
+    if(g_idx(g_blacklist, av) != -1) return 5;
+    if(av == g_owner)             return 1;
     if(av == llGetOwner()){
-        if(g_owner == NULL_KEY)   return 1;    // Owner (self-owned)
-        return 3;                             // "Worn by" user, not the configured owner
+        if(g_owner == NULL_KEY)   return 1;
+        return 3;
     }
-    if(g_idx(g_trustees, av) != -1) return 2;  // Trustee
-    if(g_public_access)             return 4;  // Public
-    return 5;                                  // No access/denied
+    if(g_idx(g_trustees, av) != -1) return 2;
+    if(g_public_access)             return 4;
+    return 5;
 }
-/* =============================================================
-   BLOCK: SMALL HELPERS END
-   ============================================================= */
 
-
-/* =============================================================
-   BLOCK: PLUGIN REGISTRY HELPERS BEGIN
-   ============================================================= */
+/* --------- Plugin registry helpers --------- */
 add_plugin(integer sn, string label, integer min_acl, string ctx){
     integer i;
     for(i=0; i<llGetListLength(g_plugins); i+=4){
@@ -110,16 +90,10 @@ remove_plugin(integer sn){
             g_plugins = llDeleteSubList(g_plugins, i, i+3);
     }
 }
-/* =============================================================
-   BLOCK: PLUGIN REGISTRY HELPERS END
-   ============================================================= */
 
-
-/* =============================================================
-   BLOCK: MENU BUILDERS BEGIN
-   ============================================================= */
-list core_btns(){ return ["Status","Apps"]; }
-list core_ctxs(){ return ["status","apps"]; }
+/* --------- Menu builders --------- */
+list core_btns(){ return ["Status","RLV","Apps"]; }
+list core_ctxs(){ return ["status","rlv_main","apps"]; }
 
 show_main_menu(key av)
 {
@@ -130,6 +104,8 @@ show_main_menu(key av)
     list core_menu_ctxs = core_ctxs();
     g_apps_btns = [];
     g_apps_ctxs = [];
+    g_rlv_btns = [];
+    g_rlv_ctxs = [];
 
     // Add lock/unlock controls for owners only (ACL 1):
     if(acl == 1){
@@ -155,6 +131,10 @@ show_main_menu(key av)
             g_apps_btns += [llList2String(g_plugins, i+1)];
             g_apps_ctxs += [ctx + "|" + (string)llList2Integer(g_plugins, i)];
         }
+        else if (section == "rlv") {
+            g_rlv_btns += [llList2String(g_plugins, i+1)];
+            g_rlv_ctxs += [ctx + "|" + (string)llList2Integer(g_plugins, i)];
+        }
         @skip_p;
     }
     while(llGetListLength(core_menu_btns) % 3 != 0) core_menu_btns += " ";
@@ -172,8 +152,24 @@ show_main_menu(key av)
     llDialog(av, "Select an option:", core_menu_btns, chan);
 }
 
+// RLV submenu
+show_rlv_menu(key av, integer chan){
+    if (llGetListLength(g_rlv_btns) == 0) {
+        llDialog(av, "No RLV plugins installed.", [" ", "OK", " "], chan);
+        return;
+    }
+    list btns = g_rlv_btns + ["Back"];
+    list ctxs = g_rlv_ctxs + ["back"];
+    while (llGetListLength(btns) % 3 != 0) btns += " ";
+    sess_set(av, 0, "",
+        llGetUnixTime() + dialog_timeout,
+        "rlv", "", "",
+        llDumpList2String(ctxs, ","), chan);
+    llDialog(av, "RLV Menu:", btns, chan);
+}
+
+// Apps submenu using registered apps
 show_apps(key av, integer chan){
-    // Apps submenu using registered apps
     if (llGetListLength(g_apps_btns) == 0) {
         llDialog(av, "No apps installed.", [" ", "OK", " "], chan);
         return;
@@ -187,14 +183,8 @@ show_apps(key av, integer chan){
         llDumpList2String(ctxs, ","), chan);
     llDialog(av, "Apps Menu:", btns, chan);
 }
-/* =============================================================
-   BLOCK: MENU BUILDERS END
-   ============================================================= */
 
-
-/* =============================================================
-   BLOCK: DIALOGS BEGIN
-   ============================================================= */
+/* --------- Dialogs --------- */
 show_status(key av, integer chan)
 {
     string t = "";
@@ -232,25 +222,17 @@ show_lock_dialog(key av, integer chan){
             "lock_toggle", "", "", "", chan);
     llDialog(av, txt, buttons, chan);
 }
-/* =============================================================
-   BLOCK: DIALOGS END
-   ============================================================= */
 
-
-/* =============================================================
-   BLOCK: LOCKING SUPPORT BEGIN
-   ============================================================= */
+/* --------- Locking support --------- */
 update_lock_state()
 {
-    // RLV locking: send to local RLV if wearer, lock/unlock attach point
     if(llGetAttached())
     {
         if(g_locked)
-            llOwnerSay("@detach=n");   // Prevent detaching (RLV/RLVa)
+            llOwnerSay("@detach=n");
         else
-            llOwnerSay("@detach=y");   // Allow detaching (RLV/RLVa)
+            llOwnerSay("@detach=y");
     }
-    // Show/hide lock/unlock visual prims
     integer nprims = llGetNumberOfPrims();
     integer i;
     for(i=2; i<=nprims; ++i)
@@ -272,14 +254,8 @@ update_lock_state()
         }
     }
 }
-/* =============================================================
-   BLOCK: LOCKING SUPPORT END
-   ============================================================= */
 
-
-/* =============================================================
-   BLOCK: TIMEOUT CHECK BEGIN
-   ============================================================= */
+/* --------- Timeout check --------- */
 timeout_check(){
     integer now = llGetUnixTime();
     integer i = 0;
@@ -289,22 +265,14 @@ timeout_check(){
         else i += 10;
     }
 }
-/* =============================================================
-   BLOCK: TIMEOUT CHECK END
-   ============================================================= */
 
-
-/* =============================================================
-   BLOCK: DEFAULT STATE BEGIN
-   ============================================================= */
+/* --------- Default state --------- */
 default
 {
     state_entry(){
         if(DEBUG) llOwnerSay("[DEBUG] Core state_entry");
         llSetTimerEvent(1.0);
         update_lock_state();
-
-        // Request relay state from relay plugin on startup
         llMessageLinked(LINK_THIS, 530, "relay_load", NULL_KEY);
     }
 
@@ -433,17 +401,36 @@ default
             if(sel == -1) return;
             string act = llList2String(ctxs, sel);
 
-            if(act == "status"){ show_status(av, chan); return; }
-            if(act == "apps"){   show_apps(av, chan);   return; }
-            if(act == "lock" || act == "unlock"){ show_lock_dialog(av, chan); return; }
+            if(act == "status"){ show_status(av, llList2Integer(s,8)); return; }
+            if(act == "rlv_main"){ show_rlv_menu(av, llList2Integer(s,8)); return; }
+            if(act == "apps"){   show_apps(av, llList2Integer(s,8));   return; }
+            if(act == "lock" || act == "unlock"){ show_lock_dialog(av, llList2Integer(s,8)); return; }
 
             list pi = llParseString2List(act, ["|"], []);
             if(llGetListLength(pi) == 2){
-                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)chan, NULL_KEY);
+                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
+            }
+        }
+        else if(ctx == "rlv"){
+            // RLV submenu
+            list ctxs = llParseString2List(menucsv, [","], []);
+            list btns = g_rlv_btns + ["Back"];
+            while(llGetListLength(btns) % 3 != 0) btns += " ";
+            integer sel = llListFindList(btns, [msg]);
+            if(sel == -1) return;
+            string act = llList2String(ctxs, sel);
+
+            if(act == "back"){
+                show_main_menu(av);
+                return;
+            }
+            list pi = llParseString2List(act, ["|"], []);
+            if(llGetListLength(pi) == 2){
+                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
             }
         }
         else if(ctx == "apps"){
-            // Apps submenu handling
+            // Apps submenu
             list ctxs = llParseString2List(menucsv, [","], []);
             list btns = g_apps_btns + ["Back"];
             while(llGetListLength(btns) % 3 != 0) btns += " ";
@@ -457,14 +444,13 @@ default
             }
             list pi = llParseString2List(act, ["|"], []);
             if(llGetListLength(pi) == 2){
-                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)chan, NULL_KEY);
+                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
             }
         }
         else if(ctx == "lock_toggle"){
             if(msg == "Lock"){   g_locked = TRUE;  update_lock_state(); }
             if(msg == "Unlock"){ g_locked = FALSE; update_lock_state(); }
             if(msg == "Lock" || msg == "Unlock"){
-                // Use a new channel for confirmation
                 integer confirm_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
                 sess_set(av, 0, "", llGetUnixTime() + dialog_timeout,
                          "lock_confirm", "", "", "", confirm_chan);
@@ -482,6 +468,3 @@ default
 
     timer(){ timeout_check(); }
 }
-/* =============================================================
-   BLOCK: DEFAULT STATE END
-   ============================================================= */
