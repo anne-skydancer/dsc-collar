@@ -1,20 +1,19 @@
 /* =============================================================
    TITLE: ds_collar_leash - Leashing & Movement Restraint Plugin
-   VERSION: 1.0
-   REVISION: 2025-07-08
+   VERSION: 1.1.1 (Plugin-local reset, no rebroadcast)
+   REVISION: 2025-07-16
    ============================================================= */
 
 /* =============================================================
    BLOCK: GLOBAL VARIABLES & CONFIG BEGIN
    ============================================================= */
 
-/*
-   Handles collar leashing, leash menu, leash follow logic,
-   leash transfer/pass, and external system (LockGuard, LMV2)
-   integrations for the DS Collar project.
-*/
-
 integer DEBUG              = TRUE;
+integer PLUGIN_SN         = 1004;
+string  PLUGIN_LABEL      = "Leashing";
+integer PLUGIN_MIN_ACL    = 4;
+string  PLUGIN_CONTEXT    = "apps_leash";
+
 integer g_leashed          = FALSE;
 key     g_leasher          = NULL_KEY;
 integer g_leash_length     = 2;
@@ -37,7 +36,6 @@ list    g_sessions;
 /* =============================================================
    BLOCK: GLOBAL VARIABLES & CONFIG END
    ============================================================= */
-
 
 /* =============================================================
    BLOCK: SESSION HELPERS
@@ -75,7 +73,6 @@ list s_get(key av)
    BLOCK: SESSION HELPERS END
    ============================================================= */
 
-
 /* =============================================================
    BLOCK: ACL/ACCESS CONTROL HELPERS
    ============================================================= */
@@ -95,15 +92,14 @@ integer get_acl(key av)
    BLOCK: ACL/ACCESS CONTROL HELPERS END
    ============================================================= */
 
-
 /* =============================================================
    BLOCK: MENU BUILDERS & UI
    ============================================================= */
 list leash_menu_btns(integer acl)
 {
     list btns = [];
-    if (acl == 1)      btns += ["Leash", "Unleash", "Set Length", "Turn", "Pass Leash"];
-    else if (acl == 2) btns += ["Leash", "Unleash", "Set Length", "Pass Leash"];
+    if (acl == 1)      btns += ["Leash", "Unleash", "Set Length", "Turn", "Pass Leash", "Anchor Leash"];
+    else if (acl == 2) btns += ["Leash", "Unleash", "Set Length", "Pass Leash", "Anchor Leash"];
     else if (acl == 3) btns += ["Unclip", "Give Leash"];
     else if (acl == 4) btns += ["Leash", "Unleash"];
     while (llGetListLength(btns) % 3 != 0) btns += [" "];
@@ -114,21 +110,25 @@ show_leash_menu(key av, integer chan)
 {
     integer acl = get_acl(av);
     list btns = leash_menu_btns(acl);
-    s_set(av, 0, "", llGetUnixTime()+180.0, "core_leash_menu", "", "", "", chan);
+    s_set(av, 0, "", llGetUnixTime()+180.0, "leash_menu", "", "", "", chan);
 
     string st = "Leash state:\n";
-    if (g_leashed) st += "Leashed to: " + llKey2Name(g_leasher) + "\n";
-    else           st += "Not leashed\n";
+    if (g_leashed)
+        st += "Leashed to: " + llKey2Name(g_leasher) + "\n";
+    else
+        st += "Not leashed\n";
     st += "Length: " + (string)g_leash_length + " m";
-    if (g_turn_to) st += "\nTurn: ON";
-    else           st += "\nTurn: OFF";
+    if (g_turn_to)
+        st += "\nTurn: ON";
+    else
+        st += "\nTurn: OFF";
     llDialog(av, st, btns, chan);
 }
 
 show_leash_length_menu(key av, integer chan)
 {
     list buttons = ["10", "15", "20", "1", "2", "5"];
-    s_set(av, 0, "", llGetUnixTime() + 180.0, "core_leash_set_length", "", "", "", chan);
+    s_set(av, 0, "", llGetUnixTime() + 180.0, "leash_set_length", "", "", "", chan);
     string info = "Select leash length (meters):\nCurrent: " + (string)g_leash_length + " m";
     llDialog(av, info, buttons, chan);
 }
@@ -136,64 +136,83 @@ show_leash_length_menu(key av, integer chan)
    BLOCK: MENU BUILDERS & UI END
    ============================================================= */
 
-
 /* =============================================================
-   BLOCK: LEASH TRANSFER & PASS LOGIC
+   BLOCK: LEASH TRANSFER & PASS LOGIC (SENSORS & HANDLERS)
    ============================================================= */
 give_leash_scan(key av, integer chan)
 {
     llSensor("", NULL_KEY, AGENT, 10.0, TWO_PI);
-    s_set(av, 0, "", llGetUnixTime()+30.0, "core_leash_give_leash_scan", "", "", "", chan);
+    s_set(av, 0, "", llGetUnixTime() + 30.0, "leash_give_scan", "", "", "", chan);
 }
-
 pass_leash_scan(key av, integer chan)
 {
     llSensor("", NULL_KEY, AGENT, 10.0, TWO_PI);
-    s_set(av, 0, "", llGetUnixTime()+30.0, "core_leash_pass_leash_scan", "", "", "", chan);
+    s_set(av, 0, "", llGetUnixTime() + 30.0, "leash_pass_scan", "", "", "", chan);
+}
+anchor_leash_scan(key av, integer chan)
+{
+    llSensor("", NULL_KEY, ACTIVE | PASSIVE, 10.0, TWO_PI);
+    s_set(av, 0, "", llGetUnixTime() + 30.0, "leash_anchor_scan", "", "", "", chan);
 }
 
 handle_avatar_scan(key av, string ctx, integer n, integer chan)
 {
     list cands = [];
     integer i;
-    for (i = 0; i < n; ++i) {
+    for (i = 0; i < n; ++i)
+    {
         key found = llDetectedKey(i);
         if (found == av) jump skip;
-        if (found == g_leasher) jump skip;
         if (llListFindList(g_blacklist, [found]) != -1) jump skip;
         cands += found;
         @skip;
     }
-    if (llGetListLength(cands) == 0) {
+    if (llGetListLength(cands) == 0)
+    {
         llDialog(av, "No avatars found within 10m.", ["OK"], chan);
         s_clear(av);
         return;
     }
     list labels = [];
     for (i = 0; i < llGetListLength(cands); ++i) labels += llKey2Name(llList2Key(cands, i));
-    string body = "";
-    if (ctx == "core_leash_give_leash_scan") body = "Give leash control to:\n";
-    else if (ctx == "core_leash_pass_leash_scan") body = "Pass leash to:\n";
-    for (i = 0; i < llGetListLength(labels); ++i) body += (string)(i+1) + ". " + llList2String(labels, i) + "\n";
     list buttons;
     for (i = 0; i < llGetListLength(labels); ++i) buttons += [(string)(i+1)];
     while (llGetListLength(buttons) % 3 != 0) buttons += [" "];
-    s_set(av, 0, llDumpList2String(cands, ","), llGetUnixTime()+30.0, ctx+"_pick", "", "", "", chan);
-    llDialog(av, body, buttons, chan);
+
+    string prompt = "";
+    if(ctx == "leash_give_scan") prompt = "Give leash to:\n";
+    else prompt = "Pass leash to:\n";
+
+    s_set(av, 0, llDumpList2String(cands, ","), llGetUnixTime() + 30.0, ctx + "_pick", "", "", "", chan);
+    llDialog(av, prompt + llDumpList2String(labels, "\n"), buttons, chan);
 }
 
-leash_transfer_confirm(key av, key target, string ctx, integer chan)
+handle_object_scan(key av, integer n, integer chan)
 {
-    string msg = "";
-    if (ctx == "give") msg = "Are you sure you want to GIVE leash control to " + llKey2Name(target) + "?";
-    if (ctx == "pass") msg = "Are you sure you want to PASS the leash to " + llKey2Name(target) + "?";
-    s_set(av, 0, (string)target, llGetUnixTime()+30.0, "core_leash_"+ctx+"_confirm", "", "", "", chan);
-    llDialog(av, msg, ["Cancel", "OK"], chan);
+    list cands = [];
+    integer i;
+    for (i = 0; i < n; ++i)
+    {
+        key found = llDetectedKey(i);
+        cands += found;
+    }
+    if (llGetListLength(cands) == 0)
+    {
+        llDialog(av, "No anchorable objects found within 10m.", ["OK"], chan);
+        s_clear(av);
+        return;
+    }
+    list labels;
+    for (i = 0; i < llGetListLength(cands); ++i) labels += llDetectedName(i);
+    list buttons;
+    for (i = 0; i < llGetListLength(labels); ++i) buttons += [(string)(i+1)];
+    while (llGetListLength(buttons) % 3 != 0) buttons += [" "];
+    s_set(av, 0, llDumpList2String(cands, ","), llGetUnixTime() + 30.0, "leash_anchor_pick", "", "", "", chan);
+    llDialog(av, "Anchor leash to object:\n" + llDumpList2String(labels, "\n"), buttons, chan);
 }
 /* =============================================================
    BLOCK: LEASH TRANSFER & PASS LOGIC END
    ============================================================= */
-
 
 /* =============================================================
    BLOCK: LEASH ANCHOR & PARTICLE EFFECTS
@@ -230,7 +249,11 @@ draw_leash_particles(key to)
                       | PSYS_PART_FOLLOW_VELOCITY_MASK
                       | PSYS_PART_RIBBON_MASK;
     string leash_tex = g_chain_texture;
-    if (to == NULL_KEY) { llParticleSystem([]); return; }
+    if (to == NULL_KEY)
+    {
+        llParticleSystem([]);
+        return;
+    }
     list psys = [
         PSYS_SRC_PATTERN, PSYS_SRC_PATTERN_DROP,
         PSYS_SRC_TEXTURE, leash_tex,
@@ -255,7 +278,6 @@ stop_leash_particles()
 /* =============================================================
    BLOCK: LEASH ANCHOR & PARTICLE EFFECTS END
    ============================================================= */
-
 
 /* =============================================================
    BLOCK: TURNING AND MOVEMENT LOGIC
@@ -307,7 +329,6 @@ leash_follow_logic()
    BLOCK: TURNING AND MOVEMENT LOGIC END
    ============================================================= */
 
-
 /* =============================================================
    BLOCK: TIMEOUT/SESSION MAINTENANCE
    ============================================================= */
@@ -325,7 +346,6 @@ timeout_check()
    BLOCK: TIMEOUT/SESSION MAINTENANCE END
    ============================================================= */
 
-
 /* =============================================================
    BLOCK: MAIN EVENT STATE
    ============================================================= */
@@ -335,8 +355,10 @@ default
     {
         llListen(lg_channel, "", NULL_KEY, "");
         llListen(lm_channel, "", NULL_KEY, "");
+        llMessageLinked(LINK_THIS, 500,
+            "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" + (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT,
+            NULL_KEY);
         if(DEBUG) llOwnerSay("[leash] Ready.");
-        llMessageLinked(LINK_THIS,500,"register|1004|Leashing|4|core_leash",NULL_KEY);
         llSetTimerEvent(1.0);
         llRequestPermissions(llGetOwner(), PERMISSION_TAKE_CONTROLS);
     }
@@ -349,10 +371,19 @@ default
 
     link_message(integer sn,integer num,string str,key id)
     {
+        /* ============================================================
+           BLOCK: RESET HANDLER
+           Resets on 'reset_owner' link_message, no rebroadcast.
+           ============================================================ */
+        if (num == -900 && str == "reset_owner")
+        {
+            llResetScript();
+            return;
+        }
         if(num == 510)
         {
             list a = llParseString2List(str, ["|"], []);
-            if(llList2String(a,0) == "leash" && llGetListLength(a) >= 3)
+            if(llList2String(a,0) == PLUGIN_CONTEXT && llGetListLength(a) >= 3)
             {
                 key av   = (key)llList2String(a, 1);
                 integer chan = (integer)llList2String(a, 2);
@@ -387,22 +418,25 @@ default
             key av = llList2Key(g_sessions, i);
             string ctx = llList2String(g_sessions, i+4);
             integer chan = llList2Integer(g_sessions, i+8);
-            if (ctx == "core_leash_give_leash_scan" || ctx == "core_leash_pass_leash_scan")
-            {
+
+            if (ctx == "leash_give_scan" || ctx == "leash_pass_scan")
                 handle_avatar_scan(av, ctx, n, chan);
-            }
+            else if (ctx == "leash_anchor_scan")
+                handle_object_scan(av, n, chan);
         }
     }
 
     no_sensor()
     {
         integer i;
-        for (i=0; i<llGetListLength(g_sessions); i+=10) {
+        for (i = 0; i < llGetListLength(g_sessions); i += 10)
+        {
             key av = llList2Key(g_sessions, i);
             string ctx = llList2String(g_sessions, i+4);
             integer chan = llList2Integer(g_sessions, i+8);
-            if (ctx == "core_leash_give_leash_scan" || ctx == "core_leash_pass_leash_scan") {
-                llDialog(av, "No avatars found within 10 meters.", ["OK"], chan);
+            if (ctx == "leash_give_scan" || ctx == "leash_pass_scan" || ctx == "leash_anchor_scan")
+            {
+                llDialog(av, "Nothing found within 10m.", ["OK"], chan);
                 s_clear(av);
             }
         }
@@ -416,7 +450,7 @@ default
         string ctx = llList2String(s,4);
 
         // Main leash menu handling
-        if(ctx == "core_leash_menu")
+        if(ctx == "leash_menu")
         {
             integer acl = get_acl(av);
             if(msg == "Leash"){
@@ -448,7 +482,8 @@ default
             }
             if(msg == "Turn"){
                 if(acl==1){
-                    g_turn_to = !g_turn_to;
+                    if (g_turn_to == TRUE) g_turn_to = FALSE;
+                    else g_turn_to = TRUE;
                     show_leash_menu(av, chan);
                 }
                 return;
@@ -477,52 +512,48 @@ default
                 }
                 return;
             }
+            if(msg == "Anchor Leash"){
+                if(acl==1 || acl==2){
+                    anchor_leash_scan(av, chan);
+                }
+                return;
+            }
         }
 
         // Avatar selection after scan for give/pass
-        if (ctx == "core_leash_give_leash_scan_pick" || ctx == "core_leash_pass_leash_scan_pick")
+        if (ctx == "leash_give_scan_pick" || ctx == "leash_pass_scan_pick")
         {
             list keys = llParseString2List(llList2String(s,2), [","], []);
             integer sel = (integer)msg;
             if (sel > 0 && sel <= llGetListLength(keys)) {
                 key picked = llList2Key(keys, sel-1);
-                if (ctx == "core_leash_give_leash_scan_pick") {
-                    leash_transfer_confirm(av, picked, "give", chan);
-                }
-                if (ctx == "core_leash_pass_leash_scan_pick") {
-                    leash_transfer_confirm(av, picked, "pass", chan);
-                }
-                return;
-            }
-        }
-
-        // Confirmation for give/pass
-        if (ctx == "core_leash_give_confirm" || ctx == "core_leash_pass_confirm")
-        {
-            key target = (key)llList2String(s,2);
-            if (msg == "OK") {
-                if (ctx == "core_leash_give_confirm") {
-                    g_leashed = TRUE;
-                    g_leasher = target;
-                    llOwnerSay("[leash] Gave leash control to " + llKey2Name(target) + ".");
-                    s_clear(av);
-                }
-                if (ctx == "core_leash_pass_confirm") {
-                    g_leashed = TRUE;
-                    g_leasher = target;
-                    llOwnerSay("[leash] Passed leash to " + llKey2Name(target) + ".");
-                    s_clear(av);
-                }
-                return;
-            }
-            if (msg == "Cancel") {
+                g_leashed = TRUE;
+                g_leasher = picked;
+                if(ctx == "leash_give_scan_pick")
+                    llOwnerSay("[leash] Gave leash to " + llKey2Name(picked));
+                else if(ctx == "leash_pass_scan_pick")
+                    llOwnerSay("[leash] Passed leash to " + llKey2Name(picked));
                 s_clear(av);
-                return;
             }
+            return;
+        }
+        // Anchor leash to object
+        if(ctx == "leash_anchor_pick")
+        {
+            list keys = llParseString2List(llList2String(s,2), [","], []);
+            integer sel = (integer)msg;
+            if (sel > 0 && sel <= llGetListLength(keys)) {
+                key picked = llList2Key(keys, sel-1);
+                g_leashed = TRUE;
+                g_leasher = picked;
+                llOwnerSay("[leash] Leashed to anchor object: " + (string)picked);
+                s_clear(av);
+            }
+            return;
         }
 
         // Set leash length
-        if(ctx == "core_leash_set_length")
+        if(ctx == "leash_set_length")
         {
             if(msg == "1" || msg == "2" || msg == "5" || msg == "10" || msg == "15" || msg == "20")
             {
@@ -588,6 +619,18 @@ default
             leash_follow_logic();
         else
             stop_leash_particles();
+    }
+
+    changed(integer change)
+    {
+        /* ============================================================
+           BLOCK: OWNER CHANGE RESET HANDLER
+           Resets on owner change, no rebroadcast.
+           ============================================================ */
+        if (change & CHANGED_OWNER)
+        {
+            llResetScript();
+        }
     }
 }
 /* =============================================================
