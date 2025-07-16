@@ -7,13 +7,6 @@
 /* =============================================================
    BLOCK: GLOBAL VARIABLES & CONFIG BEGIN
    ============================================================= */
-/*
-    Chat Plugin (Strict LSL, 2025-07-06)
-    - Handles prefix management and public chat listening.
-    - Registers itself as a plugin with the GUH core.
-    - Consistent session handling as in other GUH scripts.
-*/
-
 integer DEBUG = TRUE;
 float   dialog_timeout     = 180.0;
 
@@ -232,6 +225,13 @@ default
 
     link_message(integer sender, integer num, string str, key id)
     {
+        // PATCHED: Only reset self, do not broadcast
+        if (num == -900 && str == "reset_owner")
+        {
+            llResetScript();
+            return;
+        }        
+        
         if (num == 500)
         {
             list p = llParseStringKeepNulls(str, ["|"], []);
@@ -381,6 +381,19 @@ default
     }
 
     timer() { timeout_check(); }
+
+    changed(integer change)
+    {
+        /* ============================================================
+           BLOCK: OWNER CHANGE RESET HANDLER
+           Resets on owner change, no rebroadcast.
+           ============================================================ */
+        if (change & CHANGED_OWNER)
+        {
+            llOwnerSay("[Chat] Owner changed. Resetting chat plugin.");
+            llResetScript();
+        }
+    }
 }
 /* =============================================================
    BLOCK: MAIN EVENT LOOP END
