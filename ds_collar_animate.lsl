@@ -1,8 +1,4 @@
-/* =============================================================
-   TITLE: ds_collar_animate - Animation Menu & Playback Plugin
-   VERSION: 1.1
-   REVISION: 2025-07-06
-   ============================================================= */
+// Animate Plugin: GUH logic, navigation at 0-2, Relax at 3, anims at 4-11
 
 integer DEBUG = TRUE;
 integer PLUGIN_SN = 1002;
@@ -14,7 +10,7 @@ integer g_has_perm = FALSE;
 integer g_menu_chan = 0;
 key     g_menu_user = NULL_KEY;
 integer g_anim_page = 0;
-integer g_page_size = 8;
+integer g_page_size = 8; // 8 anims per page (indices 4-11)
 list    g_anims;
 
 get_anims()
@@ -27,6 +23,7 @@ get_anims()
         g_anims += [llGetInventoryName(INVENTORY_ANIMATION, i)];
         i += 1;
     }
+    g_anims = llListSort(g_anims, 1, TRUE); // Alphabetical order
 }
 
 show_anim_menu(key user, integer page)
@@ -39,36 +36,46 @@ show_anim_menu(key user, integer page)
         return;
     }
     g_anim_page = page;
+
+    // Calculate anims for this page
     integer start = page * g_page_size;
     integer end = start + g_page_size - 1;
     if (end >= total) end = total - 1;
 
-    list btns = [];
+    list anim_btns = [];
     integer i = start;
     while (i <= end && i < total)
     {
-        btns += llList2String(g_anims, i);
+        anim_btns += llList2String(g_anims, i);
         i += 1;
     }
-    // Pad for dialog (LSL: max 12 per dialog)
-    while (llGetListLength(btns) < g_page_size) btns += " ";
+    // Pad to 8 entries (so anims always fill 4-11)
+    while (llGetListLength(anim_btns) < g_page_size) anim_btns += " ";
 
-    list nav = [];
-    if (page > 0) nav += ["Prev"];
-    else nav += [" "];
-    nav += ["Stop All"];
-    if (end < total - 1) nav += ["Next"];
-    else nav += [" "];
+    // Build nav row (0–3)
+    string nav_back = " ";
+    if (page > 0) nav_back = "<<";
+    string nav_next = " ";
+    if (end < total - 1) nav_next = ">>";
 
-    btns += nav;
-    btns += ["Back"];
-    while (llGetListLength(btns) % 3 != 0) btns += " ";
+    list btns = [nav_back, "Main", nav_next, "Relax"] + anim_btns;
+
+    // Ensure exactly 12 buttons (indices 0–11)
+    while (llGetListLength(btns) < 12) btns += " ";
 
     g_menu_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
     g_menu_user = user;
     llListenRemove(g_menu_chan);
     llListen(g_menu_chan, "", user, "");
-    llDialog(user, "Animations (Page " + (string)(page + 1) + "):", btns, g_menu_chan);
+    llDialog(user,
+        "Animations (Page " + (string)(page + 1) + "):\n"
+        + "Select an animation to play or Relax to stop all.\n"
+        + "Navigation: << prev | Main | next >>",
+        btns, g_menu_chan);
+
+    if (DEBUG) llOwnerSay("[Animate] Menu → " + (string)user
+        + " page=" + (string)page + " chan=" + (string)g_menu_chan
+        + " btns=" + llDumpList2String(btns, ","));
 }
 
 start_anim(string anim)
@@ -96,15 +103,14 @@ stop_all_anims()
     if (DEBUG) llOwnerSay("[DEBUG] Stopped all animations.");
 }
 
-// ----- DEFAULT STATE -----
 default
 {
     state_entry()
     {
         llRequestPermissions(llGetOwner(), PERMISSION_TRIGGER_ANIMATION);
         llMessageLinked(LINK_THIS, 500,
-            "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
-            (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT,
+            "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|"
+            + (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT,
             NULL_KEY);
         if (DEBUG) llOwnerSay("[ANIMATE] Plugin ready.");
     }
@@ -129,10 +135,13 @@ default
     {
         if (chan == g_menu_chan && id == g_menu_user)
         {
-            if (msg == "Prev") { show_anim_menu(g_menu_user, g_anim_page - 1); return; }
-            if (msg == "Next") { show_anim_menu(g_menu_user, g_anim_page + 1); return; }
-            if (msg == "Stop All") { stop_all_anims(); show_anim_menu(g_menu_user, g_anim_page); return; }
-            if (msg == "Back") { return; }
+            // Navigation and Relax
+            if (msg == "<<") { show_anim_menu(g_menu_user, g_anim_page - 1); return; }
+            if (msg == ">>") { show_anim_menu(g_menu_user, g_anim_page + 1); return; }
+            if (msg == "Main") { return; } // Or close menu/go to main, your logic here
+            if (msg == "Relax") { stop_all_anims(); show_anim_menu(g_menu_user, g_anim_page); return; }
+
+            // Animation
             integer idx = llListFindList(g_anims, [msg]);
             if (idx != -1) start_anim(msg);
         }
