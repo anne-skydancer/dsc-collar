@@ -1,7 +1,7 @@
 /* =============================================================
    TITLE: ds_collar_relay - RLV Relay Plugin (Apps Menu)
-   VERSION: 2.1.0 (Consent Fix, Robust, OC-compatible)
-   REVISION: 2025-07-13
+   VERSION: 2.1.1 (Reset robust, OC-compatible)
+   REVISION: 2025-07-16
    ============================================================= */
 
 integer DEBUG = TRUE;
@@ -325,17 +325,22 @@ default
     {
         llListen(RELAY_CHANNEL, "", NULL_KEY, "");
         llSetTimerEvent(1.0);
-        llMessageLinked(LINK_THIS, 500, "register|1010|Relay|3|apps_relay", NULL_KEY);
+        llMessageLinked(LINK_THIS, 500, "register|1010|Relay|3|rlv_relay", NULL_KEY);
         llMessageLinked(LINK_THIS, 530, "relay_load", NULL_KEY);
         if(DEBUG) llOwnerSay("[Relay] Plugin ready.");
     }
 
     link_message(integer sn, integer num, string str, key id)
     {
+        if (num == -900 && str == "reset_owner")
+        {
+            llResetScript();
+            return;
+        }        
         if(num==510)
         {
             list p = llParseString2List(str, ["|"], []);
-            if(llList2String(p,0)=="apps_relay" && llGetListLength(p)>=3)
+            if(llList2String(p,0)=="rlv_relay" && llGetListLength(p)>=3)
             {
                 key av=(key)llList2String(p,1);
                 integer chan=(integer)llList2String(p,2);
@@ -420,7 +425,7 @@ default
             if(action == "unbind"){ show_unbind_confirm(av, chan); return; }
             if(action == "safeword"){ show_safeword_confirm(av, chan); return; }
             if(action == "back"){
-                llMessageLinked(LINK_THIS, 510, "apps|" + (string)av + "|" + (string)chan, NULL_KEY);
+                llMessageLinked(LINK_THIS, 510, "rlv|" + (string)av + "|" + (string)chan, NULL_KEY);
                 s_clear(av);
                 return;
             }
@@ -498,5 +503,14 @@ default
 
     timer()
     { timeout_check(); }
+
+    changed(integer change)
+    {
+        /* Block-style: handle ownership change */
+        if (change & CHANGED_OWNER)
+        {
+            llResetScript();
+        }
+    }
 }
 /* ==================== END ==================== */
