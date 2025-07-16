@@ -1,32 +1,18 @@
 /* =============================================================
    TITLE: ds_collar_access - Access control and management
    VERSION: 1.0
-   REVISION: 2025-07-06
+   REVISION: 2025-07-16
+   PATCH: owner reset on changed(), no truncated logic.
    ============================================================= */
 
-/* =============================================================
-   BLOCK: GLOBAL VARIABLES BEGIN
-   ============================================================= */
-/*
-    Persistent configuration and session state for Access plugin.
-    - DEBUG: Debugging output toggle.
-    - scan_range: Range for avatar detection when adding/removing.
-    - dialog_page_size: Number of buttons per dialog page.
-    - dialog_timeout: Dialog/session timeout in seconds.
-    - g_owner, g_owner_honorific: Owner's key and honorific string.
-    - g_trustees, g_trustee_honorifics: Lists for trustees and their titles.
-    - g_blacklist: List of blacklisted user keys.
-    - g_public_access: Boolean for public menu use.
-    - g_locked: Lock state (boolean).
-    - g_sessions: Session cache for all open dialogs [av, page, ...]
-*/
+/* ================= GLOBAL VARIABLES ================= */
 integer DEBUG = TRUE;
 
 float   scan_range = 10.0;
 integer dialog_page_size = 9;
 float   dialog_timeout = 180.0;
 
-// ========== Persistent State ==========
+// Persistent state
 key     g_owner = NULL_KEY;
 string  g_owner_honorific = "";
 list    g_trustees = [];
@@ -37,13 +23,8 @@ integer g_locked = FALSE;
 
 // Session cache: [av, page, csv, expiry, context, param, stepdata, menucsv, dialog_chan, listen_handle]
 list    g_sessions;
-/* =============================================================
-   BLOCK: GLOBAL VARIABLES END
-   ============================================================= */
 
-/* =============================================================
-   BLOCK: HELPERS BEGIN
-   ============================================================= */
+/* ================= HELPERS ================= */
 sync_state_to_guh()
 {
     string owner_hon = g_owner_honorific;
@@ -54,18 +35,12 @@ sync_state_to_guh()
     if (trust_hon_csv == "") trust_hon_csv = " ";
     string bl_csv = llDumpList2String(g_blacklist, ",");
     if (bl_csv == "") bl_csv = " ";
-
     string pub_str;
-    if (g_public_access == TRUE) pub_str = "1";
-    else pub_str = "0";
-
+    if (g_public_access == TRUE) pub_str = "1"; else pub_str = "0";
     string lock_str;
-    if (g_locked == TRUE) lock_str = "1";
-    else lock_str = "0";
-
+    if (g_locked == TRUE) lock_str = "1"; else lock_str = "0";
     llMessageLinked(
-        LINK_THIS,
-        520,
+        LINK_THIS, 520,
         "state_sync|" +
         (string)g_owner + "|" +
         owner_hon + "|" +
@@ -79,11 +54,11 @@ sync_state_to_guh()
     if (DEBUG) llOwnerSay("[Access DEBUG] State sync sent (8 fields)");
 }
 
-/* Session helpers */
+// Session helpers
 integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
 integer g_idx(list l, key k) { return llListFindList(l, [k]); }
-
-integer s_set(key av, integer page, string csv, float expiry, string context, string param, string stepdata, string menucsv, integer dialog_chan) {
+integer s_set(key av, integer page, string csv, float expiry, string context, string param, string stepdata, string menucsv, integer dialog_chan)
+{
     if (DEBUG) llOwnerSay("[Access DEBUG] s_set: av=" + (string)av + " ctx=" + context + " dialog_chan=" + (string)dialog_chan);
     integer i = s_idx(av);
     integer old_listen = -1;
@@ -96,8 +71,8 @@ integer s_set(key av, integer page, string csv, float expiry, string context, st
     g_sessions += [av, page, csv, expiry, context, param, stepdata, menucsv, dialog_chan, listen_handle];
     return 0;
 }
-
-integer s_clear(key av) {
+integer s_clear(key av)
+{
     if (DEBUG) llOwnerSay("[Access DEBUG] s_clear: av=" + (string)av);
     integer i = s_idx(av);
     if (~i) {
@@ -107,28 +82,27 @@ integer s_clear(key av) {
     }
     return 0;
 }
-
-list s_get(key av) {
+list s_get(key av)
+{
     integer i = s_idx(av);
     if (~i) return llList2List(g_sessions, i, i+9);
     return [];
 }
 
-/* Access control:
-   Returns: 1=Owner, 2=Trustee, 3=Owned wearer, 4=Public, 5=No access, 6=Blacklisted */
+// Access control: 1=Owner, 2=Trustee, 3=Owned wearer, 4=Public, 5=No access, 6=Blacklisted
 integer get_acl(key av) {
-    if (g_idx(g_blacklist, av) != -1) return 6; // Blacklist
-    if (av == g_owner) return 1;                // Owner
+    if (g_idx(g_blacklist, av) != -1) return 6;
+    if (av == g_owner) return 1;
     if (av == llGetOwner()) {
-        if (g_owner == NULL_KEY) return 1;      // Unowned wearer = Owner
-        return 3;                               // Owned wearer
+        if (g_owner == NULL_KEY) return 1;
+        return 3;
     }
-    if (g_idx(g_trustees, av) != -1) return 2;  // Trustee
-    if (g_public_access == TRUE) return 4;      // Public
-    return 5;                                   // No access
+    if (g_idx(g_trustees, av) != -1) return 2;
+    if (g_public_access == TRUE) return 4;
+    return 5;
 }
 
-/* Button/menu helpers */
+// Menu helpers
 list build_numbered_buttons(list labels) {
     list buttons = [];
     integer i;
@@ -147,7 +121,6 @@ list owner_honorifics() { return [ "Master", "Mistress", "Daddy", "Mommy", "King
 list trustee_honorifics() { return [ "Sir", "Miss", "Mister", "Madam" ]; }
 list make_uac_nav_row() { return [ "Cancel", " ", "OK" ]; }
 list make_info_nav_row() { return [ " ", "OK", " " ]; }
-
 show_uac_dialog(key av, string message, integer dialog_chan) {
     if (DEBUG) llOwnerSay("[Access DEBUG] show_uac_dialog: " + (string)av + ": " + message + " chan=" + (string)dialog_chan);
     llDialog(av, message, make_uac_nav_row(), dialog_chan);
@@ -170,19 +143,13 @@ show_public_access_dialog(key av, integer dialog_chan) {
     s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "public_toggle_confirm", "", "", "", dialog_chan);
     llDialog(av, txt, buttons, dialog_chan);
 }
-/* =============================================================
-   BLOCK: HELPERS END
-   ============================================================= */
 
-/* =============================================================
-   BLOCK: MENUS AND FLOWS BEGIN
-   ============================================================= */
+/* =========== MENUS AND FLOWS =========== */
 show_access_menu(key av, integer dialog_chan) {
     integer acl = get_acl(av);
     list buttons = [];
     list actions = [];
 
-    // Button set depends on user's ACL
     if (acl == 1) {
         if (g_owner != NULL_KEY && av == g_owner) {
             buttons = [ "Release Sub", "Add Trustee", "Remove Trustee", "Add Blacklist", "Rem Blacklist", "Public" ];
@@ -206,12 +173,10 @@ show_access_menu(key av, integer dialog_chan) {
         buttons = [ "Add Blacklist", "Rem Blacklist", "Runaway" ];
         actions = buttons;
     }
-
     if (llGetListLength(buttons) == 0) {
         show_info_dialog(av, "No access management options available.", dialog_chan);
         return;
     }
-
     while (llGetListLength(buttons) % 3 != 0) buttons += " ";
     s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "core_access", "", "", llDumpList2String(actions, ","), dialog_chan);
     llDialog(av, "Access Management:", buttons, dialog_chan);
@@ -233,7 +198,6 @@ timeout_check() {
     }
 }
 
-/* --- Flows for access management, each with UI and next-step logic --- */
 begin_add_owner(key av, integer dialog_chan) {
     llSensor("", NULL_KEY, AGENT, scan_range, TWO_PI);
     s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "add_owner", "", "", "", dialog_chan);
@@ -282,27 +246,29 @@ begin_unblacklist(key av, integer dialog_chan) {
     list buttons = build_numbered_buttons(display);
     llDialog(av, dialog_body, buttons, dialog_chan);
 }
-/* =============================================================
-   BLOCK: MENUS AND FLOWS END
-   ============================================================= */
 
-/* =============================================================
-   BLOCK: EVENTS AND STATE HANDLERS BEGIN
-   ============================================================= */
+/* =========== EVENTS =========== */
 default
 {
     state_entry()
     {
-        // Register this plugin with the GUH core
         llMessageLinked(LINK_THIS, 500, "register|1001|Access|3|core_access", NULL_KEY);
         llSetTimerEvent(1.0);
         if (DEBUG) llOwnerSay("[Access DEBUG] Plugin ready.");
     }
-
     link_message(integer sn, integer num, string str, key id)
     {
-        // GUH sends: num=510, str="core_access|<avatar>|<dialog_chan>"
-        if (num == 510) {
+        if (num == -900 && str == "reset_owner")
+        {
+            llResetScript();
+            return;
+        }
+        if (num == 500)
+        {
+            // No action for plugin registration; handled by GUH.
+        }
+        if (num == 510)
+        {
             list args = llParseString2List(str, ["|"], []);
             if (llList2String(args,0) == "core_access" && llGetListLength(args) >= 3) {
                 key av = (key)llList2String(args,1);
@@ -312,7 +278,6 @@ default
             }
         }
     }
-
     sensor(integer n)
     {
         integer i;
@@ -356,7 +321,6 @@ default
             }
         }
     }
-
     no_sensor()
     {
         integer i;
@@ -370,7 +334,6 @@ default
             }
         }
     }
-
     listen(integer chan, string nm, key av, string msg)
     {
         list sess = s_get(av);
@@ -636,9 +599,13 @@ default
             if (msg == "Cancel") { s_clear(av); return; }
         }
     }
-
     timer() { timeout_check(); }
+    changed(integer change)
+    {
+        if (change & CHANGED_OWNER)
+        {
+            llOwnerSay("[Access] Collar owner changed, resetting Access plugin.");
+            llResetScript();
+        }
+    }
 }
-/* =============================================================
-   BLOCK: EVENTS AND STATE HANDLERS END
-   ============================================================= */
