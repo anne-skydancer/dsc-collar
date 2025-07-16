@@ -28,6 +28,13 @@ list    g_rlv_ctxs;
 string  g_relay_state         = "";
 
 /* --------- Small helpers --------- */
+
+reset_all_plugins()
+{
+    llOwnerSay("Collar: resetting all modules...");
+    llMessageLinked(LINK_SET, -900, "reset_owner", NULL_KEY);
+    // Do not call llResetScript() here; the script will reset itself on receipt.
+}
 integer s_idx(key av) { 
     return llListFindList(g_sessions, [av]); 
 }
@@ -93,7 +100,7 @@ remove_plugin(integer sn){
 
 /* --------- Menu builders --------- */
 list core_btns(){ return ["Status","RLV","Apps"]; }
-list core_ctxs(){ return ["status","rlv_main","apps"]; }
+list core_ctxs(){ return ["status","rlv","apps"]; }
 
 show_main_menu(key av)
 {
@@ -123,7 +130,7 @@ show_main_menu(key av)
         string section = "";
         if (llGetListLength(parts) > 0) section = llList2String(parts, 0);
 
-        if (section == "core") {
+        if (section == "core" || section == "hub") {
             core_menu_btns += [llList2String(g_plugins, i+1)];
             core_menu_ctxs += [ctx + "|" + (string)llList2Integer(g_plugins, i)];
         }
@@ -153,7 +160,7 @@ show_main_menu(key av)
 }
 
 // RLV submenu
-show_rlv_menu(key av, integer chan){
+show_rlv(key av, integer chan){
     if (llGetListLength(g_rlv_btns) == 0) {
         llDialog(av, "No RLV plugins installed.", [" ", "OK", " "], chan);
         return;
@@ -294,6 +301,13 @@ default
 
     link_message(integer sn, integer num, string str, key id)
     {
+        // -- Reset handler: accept broadcast, do not rebroadcast --
+        if(num == -900 && str == "reset_owner")
+        {
+            llResetScript();
+            return;
+        }
+
         if(num == 500)
         {
             list p = llParseStringKeepNulls(str, ["|"], []);
@@ -306,21 +320,6 @@ default
 
                 add_plugin(sn, label, min_acl, ctx);
                 if(DEBUG) llOwnerSay("[PLUGIN] Registered " + "named " + label + " serial " + llList2String(p, 1) + " with min. ACL= " + (string)min_acl + " context " + ctx);
-            }
-        }
-        else if (num == 510)
-        {
-            list p = llParseString2List(str, ["|"], []);
-            if(llGetListLength(p) >=2)
-            {
-                string action = llList2String(p,0);
-                key user = (key)llList2String(p,1);
-                
-                if (action == "main")
-                {
-                    show_main_menu(user);
-                    return;
-                }
             }
         }
         else if(num == 501 && str == "unregister"){ 
@@ -386,6 +385,7 @@ default
 
     listen(integer chan, string nm, key av, string msg)
     {
+
         list s = sess_get(av);
         if(llGetListLength(s) == 0) return;
         if(chan != llList2Integer(s, 8)) return;
@@ -417,7 +417,7 @@ default
             string act = llList2String(ctxs, sel);
 
             if(act == "status"){ show_status(av, llList2Integer(s,8)); return; }
-            if(act == "rlv_main"){ show_rlv_menu(av, llList2Integer(s,8)); return; }
+            if(act == "rlv"){ show_rlv(av, llList2Integer(s,8)); return; }
             if(act == "apps"){   show_apps(av, llList2Integer(s,8));   return; }
             if(act == "lock" || act == "unlock"){ show_lock_dialog(av, llList2Integer(s,8)); return; }
 
@@ -482,4 +482,17 @@ default
     }
 
     timer(){ timeout_check(); }
+
+    changed(integer change)
+    {
+        /* ============================================================
+           BLOCK: OWNER CHANGE RESET HANDLER
+           Resets on owner change, no rebroadcast.
+           ============================================================ */
+        if (change & CHANGED_OWNER)
+        {
+            llOwnerSay("[GUH] Collar owner changed. Resetting core.");
+            llResetScript();
+        }
+    }
 }
