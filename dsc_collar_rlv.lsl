@@ -1,7 +1,7 @@
 /* =============================================================
    TITLE: ds_collar_rlv - RLV Suite/Control Plugin (Apps Menu)
-   VERSION: 1.2.2 (Speech label fix, Strict LSL)
-   REVISION: 2025-07-15
+   VERSION: 1.2.3 (Strict LSL, robust reset handling)
+   REVISION: 2025-07-16
    ============================================================= */
 
 integer DEBUG = TRUE;
@@ -33,7 +33,7 @@ list g_trustees = [];
 list g_blacklist = [];
 integer g_public_access = FALSE;
 
-string PLUGIN_NAME = "RLV";
+string PLUGIN_NAME = "Restrict";
 
 // Pagination constants
 integer DIALOG_PAGE_SIZE = 9;
@@ -227,7 +227,7 @@ timeout_check()
 
 /* --------- Plugin registration --------- */
 register_plugin() {
-    llMessageLinked(LINK_THIS, 500, "register|1011|" + PLUGIN_NAME + "|3|apps_rlvrestrict", NULL_KEY);
+    llMessageLinked(LINK_THIS, 500, "register|1011|" + PLUGIN_NAME + "|3|rlv_rlvrestrict", NULL_KEY);
 }
 
 /* ========== MAIN EVENT LOOP ========== */
@@ -242,10 +242,15 @@ default
 
     link_message(integer sn, integer num, string str, key id)
     {
+        if (num == -900 && str == "reset_owner")
+        {
+            llResetScript();
+            return;
+        }        
         if(num == 510)
         {
             list p = llParseString2List(str, ["|"], []);
-            if(llList2String(p,0) == "apps_rlvrestrict" && llGetListLength(p) >= 3)
+            if(llList2String(p,0) == "rlv_rlvrestrict" && llGetListLength(p) >= 3)
             {
                 key av = (key)llList2String(p,1);
                 integer chan = (integer)llList2String(p,2);
@@ -310,5 +315,14 @@ default
         }
     }
     timer(){ timeout_check(); }
+
+    changed(integer change)
+    {
+        /* Block-style: handle ownership change */
+        if (change & CHANGED_OWNER)
+        {
+            llResetScript();
+        }
+    }
 }
 /* ==================== END ==================== */
