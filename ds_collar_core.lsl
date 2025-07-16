@@ -308,6 +308,21 @@ default
                 if(DEBUG) llOwnerSay("[PLUGIN] Registered " + "named " + label + " serial " + llList2String(p, 1) + " with min. ACL= " + (string)min_acl + " context " + ctx);
             }
         }
+        else if (num == 510)
+        {
+            list p = llParseString2List(str, ["|"], []);
+            if(llGetListLength(p) >=2)
+            {
+                string action = llList2String(p,0);
+                key user = (key)llList2String(p,1);
+                
+                if (action == "main")
+                {
+                    show_main_menu(user);
+                    return;
+                }
+            }
+        }
         else if(num == 501 && str == "unregister"){ 
             remove_plugin(sn); 
         }
