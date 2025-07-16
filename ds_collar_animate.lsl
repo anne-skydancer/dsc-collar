@@ -1,4 +1,4 @@
-// Animate Plugin: GUH logic, navigation at 0-2, Relax at 3, anims at 4-11
+// Animate Plugin: GUH logic, navigation at 0-2, Relax at 3, anims at 4-11, Main returns to GUH
 
 integer DEBUG = TRUE;
 integer PLUGIN_SN = 1002;
@@ -84,6 +84,8 @@ start_anim(string anim)
     {
         llStartAnimation(anim);
         if (DEBUG) llOwnerSay("[DEBUG] Playing animation: " + anim);
+        // Keep menu open for user
+        show_anim_menu(g_menu_user, g_anim_page);
     }
     else
     {
@@ -122,6 +124,12 @@ default
 
     link_message(integer sn, integer num, string str, key id)
     {
+        // PATCHED: Only respond to reset, do not broadcast further
+        if (num == -900 && str == "reset_owner")
+        {
+            llResetScript();
+            return;
+        }
         // GUH: "apps_animate|user|chan"
         list p = llParseString2List(str, ["|"], []);
         if (llList2String(p, 0) == PLUGIN_CONTEXT && llGetListLength(p) >= 3)
@@ -135,15 +143,39 @@ default
     {
         if (chan == g_menu_chan && id == g_menu_user)
         {
-            // Navigation and Relax
             if (msg == "<<") { show_anim_menu(g_menu_user, g_anim_page - 1); return; }
             if (msg == ">>") { show_anim_menu(g_menu_user, g_anim_page + 1); return; }
-            if (msg == "Main") { return; } // Or close menu/go to main, your logic here
-            if (msg == "Relax") { stop_all_anims(); show_anim_menu(g_menu_user, g_anim_page); return; }
-
-            // Animation
+            if (msg == "Main")
+            {
+                // Return to main menu in GUH (link_message 510 is the plugin signal used)
+                llMessageLinked(LINK_THIS, 510, "main|" + (string)g_menu_user + "|0", NULL_KEY);
+                return;
+            }
+            if (msg == "Relax")
+            {
+                stop_all_anims();
+                show_anim_menu(g_menu_user, g_anim_page);
+                return;
+            }
             integer idx = llListFindList(g_anims, [msg]);
-            if (idx != -1) start_anim(msg);
+            if (idx != -1)
+            {
+                start_anim(msg);
+                return;
+            }
+        }
+    }
+
+    changed(integer change)
+    {
+        /* ============================================================
+           BLOCK: OWNER CHANGE RESET HANDLER
+           Resets on owner change, no rebroadcast.
+           ============================================================ */
+        if (change & CHANGED_OWNER)
+        {
+            llOwnerSay("[ANIMATE] Owner changed. Resetting animate plugin.");
+            llResetScript();
         }
     }
 }
