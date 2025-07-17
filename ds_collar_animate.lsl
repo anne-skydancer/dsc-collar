@@ -18,10 +18,6 @@ integer g_has_perm = FALSE;
 list    g_sessions;
 
 // Animate plugin specific globals
-integer g_menu_chan = 0;
-integer g_listen_handle = -1;  // Store listen handle here
-key     g_menu_user = NULL_KEY;
-integer g_anim_page = 0;
 integer g_page_size = 8; // 8 anims per page (indices 4-11)
 list    g_anims;
 
@@ -84,7 +80,6 @@ show_anim_menu(key user, integer page)
         llDialog(user, "No animations in collar.", ["OK"], -1);
         return;
     }
-    g_anim_page = page;
 
     // Calculate anims for this page
     integer start = page * g_page_size;
@@ -112,34 +107,34 @@ show_anim_menu(key user, integer page)
     // Ensure exactly 12 buttons (indices 0–11)
     while (llGetListLength(btns) < 12) btns += " ";
 
-    // Remove previous listen if active
-    if (g_listen_handle != -1) {
-        llListenRemove(g_listen_handle);
-        g_listen_handle = -1;
-    }
+    integer dialog_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
+    float expiry = llGetUnixTime() + 180.0;
 
-    g_menu_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
-    g_menu_user = user;
-    g_listen_handle = llListen(g_menu_chan, "", user, "");
+    // Store session with current page as 'page' and context as PLUGIN_CONTEXT
+    s_set(user, page, "", expiry, PLUGIN_CONTEXT, "", "", "", dialog_chan);
+
     llDialog(user,
         "Animations (Page " + (string)(page + 1) + "):\n"
         + "Select an animation to play or Relax to stop all.\n"
         + "Navigation: << prev | Main | next >>",
-        btns, g_menu_chan);
+        btns, dialog_chan);
 
     if (DEBUG) llOwnerSay("[Animate] Menu → " + (string)user
-        + " page=" + (string)page + " chan=" + (string)g_menu_chan
+        + " page=" + (string)page + " chan=" + (string)dialog_chan
         + " btns=" + llDumpList2String(btns, ","));
 }
 
-start_anim(string anim)
+start_anim(key av, string anim)
 {
     if (g_has_perm)
     {
         llStartAnimation(anim);
         if (DEBUG) llOwnerSay("[DEBUG] Playing animation: " + anim);
-        // Keep menu open for user
-        show_anim_menu(g_menu_user, g_anim_page);
+        // Refresh menu for user
+        list sess = s_get(av);
+        integer page = 0;
+        if (llGetListLength(sess) > 0) page = llList2Integer(sess,1);
+        show_anim_menu(av, page);
     }
     else
     {
@@ -219,28 +214,27 @@ default
         integer dialog_chan = llList2Integer(sess, 8);
         if (chan != dialog_chan) return;
 
-        if (chan == g_menu_chan && id == g_menu_user)
+        integer page = llList2Integer(sess, 1);
+
+        if (msg == "<<") { show_anim_menu(id, page - 1); return; }
+        if (msg == ">>") { show_anim_menu(id, page + 1); return; }
+        if (msg == "Main")
         {
-            if (msg == "<<") { show_anim_menu(g_menu_user, g_anim_page - 1); return; }
-            if (msg == ">>") { show_anim_menu(g_menu_user, g_anim_page + 1); return; }
-            if (msg == "Main")
-            {
-                // Return to main menu in GUH (link_message 510 is the plugin signal used)
-                llMessageLinked(LINK_THIS, 510, "main|" + (string)g_menu_user + "|0", NULL_KEY);
-                return;
-            }
-            if (msg == "Relax")
-            {
-                stop_all_anims();
-                show_anim_menu(g_menu_user, g_anim_page);
-                return;
-            }
-            integer idx = llListFindList(g_anims, [msg]);
-            if (idx != -1)
-            {
-                start_anim(msg);
-                return;
-            }
+            // Return to main menu in GUH (link_message 510 is the plugin signal used)
+            llMessageLinked(LINK_THIS, 510, "main|" + (string)id + "|0", NULL_KEY);
+            return;
+        }
+        if (msg == "Relax")
+        {
+            stop_all_anims();
+            show_anim_menu(id, page);
+            return;
+        }
+        integer idx = llListFindList(g_anims, [msg]);
+        if (idx != -1)
+        {
+            start_anim(id, msg);
+            return;
         }
     }
 
