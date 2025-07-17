@@ -1,13 +1,18 @@
 /* =============================================================
-   TITLE: ds_collar_access - Access control and management
-   VERSION: 1.0
-   REVISION: 2025-07-16
-   PATCH: owner reset on changed(), no truncated logic.
+   TITLE: ds_collar_access - Access control and management (Universal Template)
+   VERSION: 1.1-U (Universal Template, dynamic serial, best practices)
+   REVISION: 2025-07-18
    ============================================================= */
 
-/* ================= GLOBAL VARIABLES ================= */
+/* ================= UNIVERSAL HEADER ================= */
 integer DEBUG = TRUE;
 
+integer PLUGIN_SN;           // Serial will be assigned on state_entry
+string  PLUGIN_LABEL    = "Access";
+integer PLUGIN_MIN_ACL  = 3;
+string  PLUGIN_CTX      = "core_access";
+
+/* ================= GLOBAL VARIABLES ================= */
 float   scan_range = 10.0;
 integer dialog_page_size = 9;
 float   dialog_timeout = 180.0;
@@ -35,10 +40,8 @@ sync_state_to_guh()
     if (trust_hon_csv == "") trust_hon_csv = " ";
     string bl_csv = llDumpList2String(g_blacklist, ",");
     if (bl_csv == "") bl_csv = " ";
-    string pub_str;
-    if (g_public_access == TRUE) pub_str = "1"; else pub_str = "0";
-    string lock_str;
-    if (g_locked == TRUE) lock_str = "1"; else lock_str = "0";
+    string pub_str = (g_public_access == TRUE) ? "1" : "0";
+    string lock_str = (g_locked == TRUE) ? "1" : "0";
     llMessageLinked(
         LINK_THIS, 520,
         "state_sync|" +
@@ -119,14 +122,12 @@ string numbered_menu_text(list labels) {
 }
 list owner_honorifics() { return [ "Master", "Mistress", "Daddy", "Mommy", "King", "Queen" ]; }
 list trustee_honorifics() { return [ "Sir", "Miss", "Mister", "Madam" ]; }
-list make_uac_nav_row() { return [ "OK", " ", "Cancel" ]; } // corrected order!
+list make_uac_nav_row() { return [ "OK", " ", "Cancel" ]; } // correct order
 list make_info_nav_row() { return [ " ", "OK", " " ]; }
 show_uac_dialog(key av, string message, integer dialog_chan) {
-    if (DEBUG) llOwnerSay("[Access DEBUG] show_uac_dialog: " + (string)av + ": " + message + " chan=" + (string)dialog_chan);
     llDialog(av, message, make_uac_nav_row(), dialog_chan);
 }
 show_info_dialog(key av, string message, integer dialog_chan) {
-    if (DEBUG) llOwnerSay("[Access DEBUG] show_info_dialog: " + (string)av + ": " + message + " chan=" + (string)dialog_chan);
     llDialog(av, message, make_info_nav_row(), dialog_chan);
 }
 show_public_access_dialog(key av, integer dialog_chan) {
@@ -177,7 +178,7 @@ show_access_menu(key av, integer dialog_chan) {
         return;
     }
     while (llGetListLength(buttons) % 3 != 0) buttons += " ";
-    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "core_access", "", "", llDumpList2String(actions, ","), dialog_chan);
+    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, PLUGIN_CTX, "", "", llDumpList2String(actions, ","), dialog_chan);
     llDialog(av, "Access Management:", buttons, dialog_chan);
 }
 
@@ -251,9 +252,10 @@ default
 {
     state_entry()
     {
-        llMessageLinked(LINK_THIS, 500, "register|1001|Access|3|core_access", NULL_KEY);
+        PLUGIN_SN = (integer)(llFrand(90000) + 10000); // always 5 digits, 10000-99999
+        llMessageLinked(LINK_THIS, 500, "register|"+(string)PLUGIN_SN+"|"+PLUGIN_LABEL+"|"+(string)PLUGIN_MIN_ACL+"|"+PLUGIN_CTX, NULL_KEY);
         llSetTimerEvent(1.0);
-        if (DEBUG) llOwnerSay("[Access DEBUG] Plugin ready.");
+        if (DEBUG) llOwnerSay("[Access U] Plugin ready. Serial: " + (string)PLUGIN_SN);
     }
     link_message(integer sn, integer num, string str, key id)
     {
@@ -262,14 +264,10 @@ default
             llResetScript();
             return;
         }
-        if (num == 500)
-        {
-            // No action for plugin registration; handled by GUH.
-        }
         if (num == 510)
         {
             list args = llParseString2List(str, ["|"], []);
-            if (llList2String(args,0) == "core_access" && llGetListLength(args) >= 3) {
+            if (llList2String(args,0) == PLUGIN_CTX && llGetListLength(args) >= 3) {
                 key av = (key)llList2String(args,1);
                 integer dialog_chan = (integer)llList2String(args,2);
                 show_access_menu(av, dialog_chan);
@@ -355,7 +353,7 @@ default
         if (sel != -1 && sel < llGetListLength(allowed)) {
             action = llList2String(allowed, sel);
 
-            if (ctx == "core_access") {
+            if (ctx == PLUGIN_CTX) {
                 if (action == "Add Owner")        { begin_add_owner(av, dialog_chan); return; }
                 if (action == "Release Sub")      { begin_release_sub(av, dialog_chan); return; }
                 if (action == "Add Trustee")      { begin_add_trustee(av, dialog_chan); return; }
@@ -372,7 +370,10 @@ default
             }
         }
 
-        // All other dialog ctx handlers unchanged, remain as before...
+        // All dialog ctx handlers remain as in previous script...
+
+        // (Paste all original context branches here, unchanged except for ctx value to use PLUGIN_CTX where relevant)
+        // (No other code changes necessary in the context branches.)
 
         // --- ADD OWNER ---
         if (ctx == "add_owner") {
