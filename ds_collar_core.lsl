@@ -162,7 +162,7 @@ show_main_menu(key av)
 // RLV submenu
 show_rlv(key av, integer chan){
     if (llGetListLength(g_rlv_btns) == 0) {
-        llDialog(av, "No RLV plugins installed.", [" ", "OK", " "], chan);
+        llDialog(av, "No RLV plugins installed.", [ " ", "OK", " " ], chan);
         return;
     }
     list btns = g_rlv_btns + ["Back"];
@@ -178,7 +178,7 @@ show_rlv(key av, integer chan){
 // Apps submenu using registered apps
 show_apps(key av, integer chan){
     if (llGetListLength(g_apps_btns) == 0) {
-        llDialog(av, "No apps installed.", [" ", "OK", " "], chan);
+        llDialog(av, "No apps installed.", [ " ", "OK", " " ], chan);
         return;
     }
     list btns = g_apps_btns + ["Back"];
@@ -211,7 +211,7 @@ show_status(key av, integer chan)
     if(g_locked)        t += "Locked: YES\n";
     else                t += "Locked: NO\n";
 
-    llDialog(av, t, [" ", "OK", " "], chan);
+    llDialog(av, t, [ " ", "OK", " " ], chan);
 }
 
 show_lock_dialog(key av, integer chan){
@@ -219,10 +219,10 @@ show_lock_dialog(key av, integer chan){
     list buttons;
     if(g_locked){
         txt = "The collar is currently LOCKED.\nUnlock the collar?";
-        buttons = ["Unlock", "Cancel"];
+        buttons = [ "Unlock", " ", "Cancel" ];
     }else{
         txt = "The collar is currently UNLOCKED.\nLock the collar?";
-        buttons = ["Lock", "Cancel"];
+        buttons = [ "Lock", " ", "Cancel" ];
     }
     while(llGetListLength(buttons) % 3 != 0) buttons += " ";
     sess_set(av, 0, "", llGetUnixTime() + dialog_timeout,
@@ -289,11 +289,11 @@ default
         integer acl = get_acl(toucher);
 
         if (acl == 5) {
-            llDialog(toucher, "This collar is restricted.", ["OK"], -1);
+            llDialog(toucher, "This collar is restricted.", [ " ", "OK", " " ], -1);
             return;
         }
         if (acl == 4 && !g_public_access) {
-            llDialog(toucher, "This collar is restricted.", ["OK"], -1);
+            llDialog(toucher, "This collar is restricted.", [ " ", "OK", " " ], -1);
             return;
         }
         show_main_menu(toucher);
@@ -471,7 +471,7 @@ default
                          "lock_confirm", "", "", "", confirm_chan);
                 string lock_state = "Collar is now ";
                 if(g_locked) lock_state += "LOCKED."; else lock_state += "UNLOCKED.";
-                llDialog(av, lock_state, ["OK"], confirm_chan);
+                llDialog(av, lock_state, [ " ", "OK", " " ], confirm_chan);
                 return;
             }
             if(msg == "Cancel"){ sess_clear(av); }
