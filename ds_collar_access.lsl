@@ -119,7 +119,7 @@ string numbered_menu_text(list labels) {
 }
 list owner_honorifics() { return [ "Master", "Mistress", "Daddy", "Mommy", "King", "Queen" ]; }
 list trustee_honorifics() { return [ "Sir", "Miss", "Mister", "Madam" ]; }
-list make_uac_nav_row() { return [ "Cancel", " ", "OK" ]; }
+list make_uac_nav_row() { return [ "OK", " ", "Cancel" ]; } // corrected order!
 list make_info_nav_row() { return [ " ", "OK", " " ]; }
 show_uac_dialog(key av, string message, integer dialog_chan) {
     if (DEBUG) llOwnerSay("[Access DEBUG] show_uac_dialog: " + (string)av + ": " + message + " chan=" + (string)dialog_chan);
@@ -134,12 +134,11 @@ show_public_access_dialog(key av, integer dialog_chan) {
     list buttons;
     if (g_public_access == TRUE) {
         txt += "ENABLED.\nDisable public access?";
-        buttons = [ "Disable", "Cancel" ];
+        buttons = [ "Disable", " ", "Cancel" ];
     } else {
         txt += "DISABLED.\nEnable public access?";
-        buttons = [ "Enable", "Cancel" ];
+        buttons = [ "Enable", " ", "Cancel" ];
     }
-    while (llGetListLength(buttons) % 3 != 0) buttons += " ";
     s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "public_toggle_confirm", "", "", "", dialog_chan);
     llDialog(av, txt, buttons, dialog_chan);
 }
