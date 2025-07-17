@@ -97,12 +97,16 @@ integer get_acl(key av)
    ============================================================= */
 list leash_menu_btns(integer acl)
 {
-    list btns = [];
-    if (acl == 1)      btns += ["Leash", "Unleash", "Set Length", "Turn", "Pass Leash", "Anchor Leash"];
-    else if (acl == 2) btns += ["Leash", "Unleash", "Set Length", "Pass Leash", "Anchor Leash"];
-    else if (acl == 3) btns += ["Unclip", "Give Leash"];
-    else if (acl == 4) btns += ["Leash", "Unleash"];
-    while (llGetListLength(btns) % 3 != 0) btns += [" "];
+    list core_btns = [];
+    if (acl == 1)      core_btns += ["Leash", "Unleash", "Set Length", "Turn", "Pass Leash", "Anchor Leash"];
+    else if (acl == 2) core_btns += ["Leash", "Unleash", "Set Length", "Pass Leash", "Anchor Leash"];
+    else if (acl == 3) core_btns += ["Unclip", "Give Leash"];
+    else if (acl == 4) core_btns += ["Leash", "Unleash"];
+
+    // Add "Back" (always index 0), pad for Cancel (index 2)
+    // Fill out first row for dialog nav, then append actions
+    list btns = [ "Back", " ", "Cancel" ] + core_btns;
+    while (llGetListLength(btns) % 3 != 0) btns += [ " " ];
     return btns;
 }
 
@@ -127,7 +131,9 @@ show_leash_menu(key av, integer chan)
 
 show_leash_length_menu(key av, integer chan)
 {
-    list buttons = ["10", "15", "20", "1", "2", "5"];
+    // Button layout: Back (0), blank, Cancel (2), then length options
+    list buttons = [ "Back", " ", "Cancel", "10", "15", "20", "1", "2", "5" ];
+    while (llGetListLength(buttons) % 3 != 0) buttons += [ " " ];
     s_set(av, 0, "", llGetUnixTime() + 180.0, "leash_set_length", "", "", "", chan);
     string info = "Select leash length (meters):\nCurrent: " + (string)g_leash_length + " m";
     llDialog(av, info, buttons, chan);
@@ -169,7 +175,7 @@ handle_avatar_scan(key av, string ctx, integer n, integer chan)
     }
     if (llGetListLength(cands) == 0)
     {
-        llDialog(av, "No avatars found within 10m.", ["OK"], chan);
+        llDialog(av, "No avatars found within 10m.", ["OK", " ", "Cancel"], chan);
         s_clear(av);
         return;
     }
@@ -198,7 +204,7 @@ handle_object_scan(key av, integer n, integer chan)
     }
     if (llGetListLength(cands) == 0)
     {
-        llDialog(av, "No anchorable objects found within 10m.", ["OK"], chan);
+        llDialog(av, "No anchorable objects found within 10m.", ["OK", " ", "Cancel"], chan);
         s_clear(av);
         return;
     }
@@ -436,7 +442,7 @@ default
             integer chan = llList2Integer(g_sessions, i+8);
             if (ctx == "leash_give_scan" || ctx == "leash_pass_scan" || ctx == "leash_anchor_scan")
             {
-                llDialog(av, "Nothing found within 10m.", ["OK"], chan);
+                llDialog(av, "Nothing found within 10m.", ["OK", " ", "Cancel"], chan);
                 s_clear(av);
             }
         }
@@ -453,6 +459,14 @@ default
         if(ctx == "leash_menu")
         {
             integer acl = get_acl(av);
+            if(msg == "Back"){
+                s_clear(av);
+                return;
+            }
+            if(msg == "Cancel"){
+                s_clear(av);
+                return;
+            }
             if(msg == "Leash"){
                 if(acl==1 || acl==2 || acl==4){
                     g_leashed = TRUE;
@@ -555,6 +569,10 @@ default
         // Set leash length
         if(ctx == "leash_set_length")
         {
+            if(msg == "Back" || msg == "Cancel"){
+                s_clear(av);
+                return;
+            }
             if(msg == "1" || msg == "2" || msg == "5" || msg == "10" || msg == "15" || msg == "20")
             {
                 g_leash_length = (integer)msg;
