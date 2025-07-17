@@ -1,18 +1,23 @@
 /* =============================================================
-   TITLE: ds_collar_rlv - RLV Suite/Control Plugin (Apps Menu)
-   VERSION: 1.2.3 (Strict LSL, robust reset handling)
-   REVISION: 2025-07-16
+   TITLE: ds_collar_rlv - RLV Suite/Control Plugin (Universal Template)
+   VERSION: 1.1-U (Universal Template, dynamic serial, best practices)
+   REVISION: 2025-07-18
    ============================================================= */
 
+/* ================= UNIVERSAL HEADER ================= */
+
 integer DEBUG = TRUE;
+integer PLUGIN_SN = 0;  // Assigned in state_entry
+string  PLUGIN_LABEL = "Restrict";
+integer PLUGIN_MIN_ACL = 3;
+string  PLUGIN_CONTEXT = "rlv_rlvrestrict";
 
-integer ACL_OWNER    = 1; // LV1
-integer ACL_TRUSTEE  = 2; // LV2
-integer ACL_WEARER   = 3; // LV3
+/* --------- ACL and categories --------- */
+integer ACL_OWNER    = 1;
+integer ACL_TRUSTEE  = 2;
+integer ACL_WEARER   = 3;
+integer MAX_RESTRICTIONS = 32;
 
-integer MAX_RESTRICTIONS = 32; // Arbitrary large
-
-// -- Restriction categories --
 list CAT_INV    = [ "@detachall", "@addoutfit", "@remoutfit", "@remattach", "@addattach", "@attachall", "@showinv", "@viewnote", "@viewscript" ];
 list CAT_SPEECH = [ "@sendchat", "@recvim", "@sendim", "@startim", "@chatshout", "@chatwhisper" ];
 list CAT_TRAVEL = [ "@tptlm", "@tploc", "@tplure" ];
@@ -23,19 +28,14 @@ list LABEL_SPEECH = [ "Chat:", "Recv IM:", "Send IM:", "Start IM:", "Shout:", "W
 list LABEL_TRAVEL = [ "Map TP:", "Loc. TP:", "TP:" ];
 list LABEL_OTHER  = [ "Edit:", "Rez:", "Touch:", "Touch Wld:", "OK TP:", "Names:", "Sit:", "Unsit:", "Stand:" ];
 
-list g_restrictions = []; // List of active restrictions
-
-// Session/UI/ACL
+list g_restrictions = [];
 list g_sessions;
 
-key g_owner = NULL_KEY;
-list g_trustees = [];
-list g_blacklist = [];
+key    g_owner = NULL_KEY;
+list   g_trustees = [];
+list   g_blacklist = [];
 integer g_public_access = FALSE;
 
-string PLUGIN_NAME = "Restrict";
-
-// Pagination constants
 integer DIALOG_PAGE_SIZE = 9;
 
 /* ----------- Session helpers ----------- */
@@ -82,16 +82,13 @@ string get_label_for_command(string cmd, list cat_cmds, list cat_labels)
     }
     return cmd + ":"; // fallback
 }
-
 string get_short_label(string cmd, integer is_active, list cat_cmds, list cat_labels)
 {
     string label = get_label_for_command(cmd, cat_cmds, cat_labels);
     if (is_active) label += "OFF";
     else label += "ON";
-    return label; // No padding!
+    return label;
 }
-
-// Map dialog label back to command (ON/OFF)
 string label_to_command(string label, list cat_cmds, list cat_labels)
 {
     integer i = 0;
@@ -149,33 +146,27 @@ list make_category_buttons(list cat_cmds, list cat_labels, integer page)
 show_main_menu(key av, integer chan) {
     integer acl = get_acl(av);
     if (acl > ACL_WEARER) return;
-    list btns = [ " ", "Back", " ",
+    list btns = [ " ", "    Back    ", " ",
                   "Other", "Safeword", "Exceptions",
                   "Inventory", "Speech", "Travel" ];
     s_set(av, 0, "", llGetUnixTime()+180.0, "main", "", "", "", chan);
     if (DEBUG) llOwnerSay("[DEBUG] show_main_menu → " + (string)av + " chan=" + (string)chan + " btns=" + llDumpList2String(btns, ","));
     llDialog(av, "RLV Restriction Menu:\nSelect a category:", btns, chan);
 }
-
-// Paginated category menu
 show_category_menu(key av, integer chan, string catname, integer page)
 {
     integer acl = get_acl(av);
     if (acl > ACL_WEARER) return;
     list catlist = get_category_list(catname);
     list catlabels = get_category_labels(catname);
-
     integer num_items = llGetListLength(catlist);
     integer max_page = (num_items - 1) / DIALOG_PAGE_SIZE;
-
     string prev = " ";
     string next = " ";
     if (page > 0) prev = "<<";
     if (page < max_page) next = ">>";
-
-    list btns = [ prev, "Back", next ];
+    list btns = [ prev, "    Back    ", next ];
     btns += make_category_buttons(catlist, catlabels, page);
-
     if (DEBUG) llOwnerSay("[DEBUG] show_category_menu: cat=" + catname + " page=" + (string)page + " btns=" + llDumpList2String(btns, ","));
     s_set(av, page, catname, llGetUnixTime()+120.0, "cat", catname + "|" + (string)page, "", llDumpList2String(catlist, ","), chan);
     llDialog(av, catname + " Restrictions:\nClick to toggle.", btns, chan);
@@ -220,7 +211,8 @@ timeout_check()
 
 /* --------- Plugin registration --------- */
 register_plugin() {
-    llMessageLinked(LINK_THIS, 500, "register|1011|" + PLUGIN_NAME + "|3|rlv_rlvrestrict", NULL_KEY);
+    PLUGIN_SN = 100000 + (integer)(llFrand(899999));
+    llMessageLinked(LINK_THIS, 500, "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" + (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT, NULL_KEY);
 }
 
 /* ========== MAIN EVENT LOOP ========== */
@@ -228,26 +220,39 @@ default
 {
     state_entry()
     {
-        register_plugin();
+        PLUGIN_SN = 100000 + (integer)(llFrand(899999));
+        llMessageLinked(LINK_THIS, 500, "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" + (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT, NULL_KEY);
         llSetTimerEvent(1.0);
-        if(DEBUG) llOwnerSay("[RLV] Plugin ready.");
+        if (DEBUG) llOwnerSay("[RLV] Exceptions plugin ready. Serial: " + (string)PLUGIN_SN);
     }
 
     link_message(integer sn, integer num, string str, key id)
     {
-        if (num == -900 && str == "reset_owner")
-        {
-            llResetScript();
-            return;
-        }        
         if(num == 510)
         {
             list p = llParseString2List(str, ["|"], []);
-            if(llList2String(p,0) == "rlv_rlvrestrict" && llGetListLength(p) >= 3)
+            if(llList2String(p,0) == PLUGIN_CONTEXT && llGetListLength(p) >= 3)
             {
                 key av = (key)llList2String(p,1);
                 integer chan = (integer)llList2String(p,2);
                 show_main_menu(av, chan);
+            }
+        }
+        if(num == 520)
+        {
+            list p = llParseString2List(str, ["|"], []);
+            if(llGetListLength(p)==8 && llList2String(p,0)=="state_sync")
+            {
+                g_owner = (key)llList2String(p,1);
+                string trust_csv = llList2String(p,3);
+                string bl_csv = llList2String(p,5);
+                string pub_str = llList2String(p,6);
+                if(trust_csv == " ") g_trustees = [];
+                else g_trustees = llParseString2List(trust_csv, [","], []);
+                if(bl_csv == " ") g_blacklist = [];
+                else g_blacklist = llParseString2List(bl_csv, [","], []);
+                if(pub_str == "1") g_public_access = TRUE;
+                else g_public_access = FALSE;
             }
         }
     }
@@ -270,11 +275,12 @@ default
             if(msg == "Other"){ show_category_menu(av, chan, "Other", 0); return; }
             if(msg == "Exceptions"){ /* exceptions */ return; }
             if(msg == "Safeword" && acl <= ACL_WEARER){
-                llDialog(av, "Are you sure you want to safeword and clear all restrictions?", [ "OK", " ", "Cancel" ], chan);
-                s_set(av, 0, "", llGetUnixTime()+30.0, "safeword_confirm", "", "", "", chan);
+                g_restrictions = [];
+                llOwnerSay("@clear");
+                llDialog(av, "All restrictions cleared by Safeword.", ["    Back    "], chan);
                 return;
             }
-            if(msg == "Back"){
+            if(msg == "    Back    "){
                 llMessageLinked(LINK_THIS, 510, "apps|" + (string)av + "|" + (string)chan, NULL_KEY);
                 s_clear(av);
                 return;
@@ -282,7 +288,6 @@ default
         }
         if(ctx == "cat")
         {
-            // param: catname|page
             list params = llParseString2List(param, ["|"], []);
             string catname = llList2String(params, 0);
             integer page = (integer)llList2String(params, 1);
@@ -292,7 +297,7 @@ default
             integer num_items = llGetListLength(cat_cmds);
             integer max_page = (num_items - 1) / DIALOG_PAGE_SIZE;
 
-            if(msg == "Back"){ show_main_menu(av, chan); return; }
+            if(msg == "    Back    "){ show_main_menu(av, chan); return; }
             if(msg == "<<" && page > 0){ show_category_menu(av, chan, catname, page - 1); return; }
             if(msg == ">>" && page < max_page){ show_category_menu(av, chan, catname, page + 1); return; }
 
@@ -302,20 +307,6 @@ default
                 if (DEBUG) llOwnerSay("[DEBUG] Clicked label: " + msg + " => cmd: " + cmd);
                 toggle_restriction(cmd, acl);
                 show_category_menu(av, chan, catname, page);
-                return;
-            }
-        }
-        if(ctx == "safeword_confirm")
-        {
-            if(msg == "OK"){
-                g_restrictions = [];
-                llOwnerSay("@clear");
-                llDialog(av, "All restrictions cleared by Safeword.", [ " ", "OK", " " ], chan);
-                s_clear(av);
-                return;
-            }
-            if(msg == "Cancel"){
-                s_clear(av);
                 return;
             }
         }
