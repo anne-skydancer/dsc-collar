@@ -32,7 +32,8 @@ show_anim_menu(key user, integer page)
     integer total = llGetListLength(g_anims);
     if (total == 0)
     {
-        llDialog(user, "No animations in collar.", ["OK"], -1);
+        // Spec fix: informational dialog puts OK in center
+        llDialog(user, "No animations in collar.", [ " ", "OK", " " ], -1);
         return;
     }
     g_anim_page = page;
