@@ -5,19 +5,18 @@
    ============================================================= */
 
 /* ================= UNIVERSAL HEADER ================= */
+
 integer DEBUG = TRUE;
+integer PLUGIN_SN = 0;  // Will be set in state_entry()
+string  PLUGIN_LABEL = "Access";
+integer PLUGIN_MIN_ACL = 3;   // Default minimum access
+string  PLUGIN_CONTEXT = "core_access";
 
-integer PLUGIN_SN       = 0; // Serial will be assigned on state_entry
-string  PLUGIN_LABEL    = "Access";
-integer PLUGIN_MIN_ACL  = 3;
-string  PLUGIN_CTX      = "core_access";
-
-/* ================= GLOBAL VARIABLES ================= */
+// Persistent global variables
 float   scan_range = 10.0;
 integer dialog_page_size = 9;
 float   dialog_timeout = 180.0;
 
-// Persistent state
 key     g_owner = NULL_KEY;
 string  g_owner_honorific = "";
 list    g_trustees = [];
@@ -26,10 +25,48 @@ list    g_blacklist = [];
 integer g_public_access = FALSE;
 integer g_locked = FALSE;
 
-// Session cache: [av, page, csv, expiry, context, param, stepdata, menucsv, dialog_chan, listen_handle]
+// Session cache: [av, page, csv, expiry, ctx, param, stepdata, menucsv, chan, listen_handle]
 list    g_sessions;
 
-/* ================= HELPERS ================= */
+/* ----------------- SESSION HELPERS ----------------- */
+integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
+
+integer s_set(key av, integer page, string csv, float expiry, string ctx, string param, string stepdata, string menucsv, integer chan)
+{
+    if (DEBUG) llOwnerSay("[Access DEBUG] s_set: av=" + (string)av + " ctx=" + ctx + " dialog_chan=" + (string)chan);
+    integer i = s_idx(av);
+    integer old_listen = -1;
+    if (~i) {
+        old_listen = llList2Integer(g_sessions, i+9);
+        g_sessions = llDeleteSubList(g_sessions, i, i+9);
+    }
+    if (old_listen != -1) llListenRemove(old_listen);
+    integer listen_handle = llListen(chan, "", av, "");
+    g_sessions += [av, page, csv, expiry, ctx, param, stepdata, menucsv, chan, listen_handle];
+    return TRUE;
+}
+
+integer s_clear(key av)
+{
+    if (DEBUG) llOwnerSay("[Access DEBUG] s_clear: av=" + (string)av);
+    integer i = s_idx(av);
+    if (~i) {
+        integer old_listen = llList2Integer(g_sessions, i+9);
+        if (old_listen != -1) llListenRemove(old_listen);
+        g_sessions = llDeleteSubList(g_sessions, i, i+9);
+    }
+    return TRUE;
+}
+
+list s_get(key av)
+{
+    integer i = s_idx(av);
+    if (~i) return llList2List(g_sessions, i, i+9);
+    return [];
+}
+/* ----------------- SESSION HELPERS END ----------------- */
+
+/* ================== HELPERS ================== */
 sync_state_to_guh()
 {
     string owner_hon = g_owner_honorific;
@@ -40,8 +77,18 @@ sync_state_to_guh()
     if (trust_hon_csv == "") trust_hon_csv = " ";
     string bl_csv = llDumpList2String(g_blacklist, ",");
     if (bl_csv == "") bl_csv = " ";
-    string pub_str = (g_public_access == TRUE) ? "1" : "0";
-    string lock_str = (g_locked == TRUE) ? "1" : "0";
+    string pub_str;
+    if (g_public_access == TRUE) {
+        pub_str = "1";
+    } else {
+        pub_str = "0";
+    }
+    string lock_str;
+    if (g_locked == TRUE) {
+        lock_str = "1";
+    } else {
+        lock_str = "0";
+    }
     llMessageLinked(
         LINK_THIS, 520,
         "state_sync|" +
@@ -57,42 +104,8 @@ sync_state_to_guh()
     if (DEBUG) llOwnerSay("[Access DEBUG] State sync sent (8 fields)");
 }
 
-// Session helpers
-integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
-integer g_idx(list l, key k) { return llListFindList(l, [k]); }
-integer s_set(key av, integer page, string csv, float expiry, string context, string param, string stepdata, string menucsv, integer dialog_chan)
-{
-    if (DEBUG) llOwnerSay("[Access DEBUG] s_set: av=" + (string)av + " ctx=" + context + " dialog_chan=" + (string)dialog_chan);
-    integer i = s_idx(av);
-    integer old_listen = -1;
-    if (~i) {
-        old_listen = llList2Integer(g_sessions, i+9);
-        g_sessions = llDeleteSubList(g_sessions, i, i+9);
-    }
-    if (old_listen != -1) llListenRemove(old_listen);
-    integer listen_handle = llListen(dialog_chan, "", av, "");
-    g_sessions += [av, page, csv, expiry, context, param, stepdata, menucsv, dialog_chan, listen_handle];
-    return 0;
-}
-integer s_clear(key av)
-{
-    if (DEBUG) llOwnerSay("[Access DEBUG] s_clear: av=" + (string)av);
-    integer i = s_idx(av);
-    if (~i) {
-        integer old_listen = llList2Integer(g_sessions, i+9);
-        if (old_listen != -1) llListenRemove(old_listen);
-        g_sessions = llDeleteSubList(g_sessions, i, i+9);
-    }
-    return 0;
-}
-list s_get(key av)
-{
-    integer i = s_idx(av);
-    if (~i) return llList2List(g_sessions, i, i+9);
-    return [];
-}
-
 // Access control: 1=Owner, 2=Trustee, 3=Owned wearer, 4=Public, 5=No access, 6=Blacklisted
+integer g_idx(list l, key k) { return llListFindList(l, [k]); }
 integer get_acl(key av) {
     if (g_idx(g_blacklist, av) != -1) return 6;
     if (av == g_owner) return 1;
@@ -113,6 +126,7 @@ list build_numbered_buttons(list labels) {
     while (llGetListLength(buttons) % 3 != 0) buttons += " ";
     return buttons;
 }
+
 string numbered_menu_text(list labels) {
     string text = "";
     integer i;
@@ -120,10 +134,12 @@ string numbered_menu_text(list labels) {
         text += (string)(i+1) + ". " + llList2String(labels,i) + "\n";
     return text;
 }
+
 list owner_honorifics() { return [ "Master", "Mistress", "Daddy", "Mommy", "King", "Queen" ]; }
 list trustee_honorifics() { return [ "Sir", "Miss", "Mister", "Madam" ]; }
 list make_uac_nav_row() { return [ "OK", " ", "Cancel" ]; } // correct order
 list make_info_nav_row() { return [ " ", "OK", " " ]; }
+
 show_uac_dialog(key av, string message, integer dialog_chan) {
     llDialog(av, message, make_uac_nav_row(), dialog_chan);
 }
@@ -178,7 +194,7 @@ show_access_menu(key av, integer dialog_chan) {
         return;
     }
     while (llGetListLength(buttons) % 3 != 0) buttons += " ";
-    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, PLUGIN_CTX, "", "", llDumpList2String(actions, ","), dialog_chan);
+    s_set(av, 0, "", llGetUnixTime() + dialog_timeout, PLUGIN_CONTEXT, "", "", llDumpList2String(actions, ","), dialog_chan);
     llDialog(av, "Access Management:", buttons, dialog_chan);
 }
 
@@ -252,11 +268,13 @@ default
 {
     state_entry()
     {
-        PLUGIN_SN = (integer)(llFrand(90000) + 10000); // always 5 digits, 10000-99999
-        llMessageLinked(LINK_THIS, 500, "register|"+(string)PLUGIN_SN+"|"+PLUGIN_LABEL+"|"+(string)PLUGIN_MIN_ACL+"|"+PLUGIN_CTX, NULL_KEY);
-        llSetTimerEvent(1.0);
+        // Generate a random 6-digit plugin serial number at runtime
+        PLUGIN_SN = 100000 + (integer)(llFrand(899999));
+        llMessageLinked(LINK_THIS, 500, "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" + (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT, NULL_KEY);
         if (DEBUG) llOwnerSay("[Access U] Plugin ready. Serial: " + (string)PLUGIN_SN);
+        llSetTimerEvent(1.0);
     }
+
     link_message(integer sn, integer num, string str, key id)
     {
         if (num == -900 && str == "reset_owner")
@@ -267,70 +285,79 @@ default
         if (num == 510)
         {
             list args = llParseString2List(str, ["|"], []);
-            if (llList2String(args,0) == PLUGIN_CTX && llGetListLength(args) >= 3) {
-                key av = (key)llList2String(args,1);
-                integer dialog_chan = (integer)llList2String(args,2);
+            if (llList2String(args, 0) == PLUGIN_CONTEXT && llGetListLength(args) >= 3)
+            {
+                key av = (key)llList2String(args, 1);
+                integer dialog_chan = (integer)llList2String(args, 2);
                 show_access_menu(av, dialog_chan);
                 return;
             }
         }
     }
-    sensor(integer n)
+
+sensor(integer n)
+{
+    integer i;
+    for (i = 0; i < llGetListLength(g_sessions); i += 10)
     {
-        integer i;
-        for (i=0; i<llGetListLength(g_sessions); i+=10)
+        key av = llList2Key(g_sessions, i);
+        string ctx = llList2String(g_sessions, i + 4);
+        integer dialog_chan = llList2Integer(g_sessions, i + 8);
+        if (ctx == "add_owner" || ctx == "add_trustee" || ctx == "blacklist")
         {
-            key av = llList2Key(g_sessions,i);
-            string ctx = llList2String(g_sessions,i+4);
-            integer dialog_chan = llList2Integer(g_sessions,i+8);
-            if (ctx == "add_owner" || ctx == "add_trustee" || ctx == "blacklist") {
-                list cands = [];
-                integer j;
-                for (j=0; j<n; ++j)
-                {
-                    key k = llDetectedKey(j);
-                    if (k == av) jump skip_current;
-                    if (ctx == "add_owner" && k == g_owner) jump skip_current;
-                    if (ctx == "add_trustee" && g_idx(g_trustees, k) != -1) jump skip_current;
-                    if (ctx == "blacklist" && g_idx(g_blacklist, k) != -1) jump skip_current;
-                    cands += k;
-                    @skip_current;
-                }
-                if (llGetListLength(cands) == 0) {
-                    show_info_dialog(av, "No avatars found within 10 meters.", dialog_chan);
-                    s_clear(av);
-                    return;
-                }
-                list labels = [];
-                integer k;
-                for (k=0; k<llGetListLength(cands); ++k)
-                    labels += llKey2Name(llList2Key(cands,k));
-                string dialog_body = "";
-                if (ctx == "add_owner") dialog_body = "Select your new primary owner:\n";
-                else if (ctx == "add_trustee") dialog_body = "Select a trustee:\n";
-                else if (ctx == "blacklist") dialog_body = "Blacklist an avatar:\n";
-                dialog_body += numbered_menu_text(labels);
-                list buttons = build_numbered_buttons(labels);
-                string cands_csv = llDumpList2String(cands, ",");
-                s_set(av, 0, cands_csv, llGetUnixTime() + dialog_timeout, ctx, "", "", cands_csv, dialog_chan);
-                llDialog(av, dialog_body, buttons, dialog_chan);
+            list cands = [];
+            integer j;
+            for (j = 0; j < n; ++j)
+            {
+                key k = llDetectedKey(j);
+                if (k == av) jump skip_current;
+                if (ctx == "add_owner" && k == g_owner) jump skip_current;
+                if (ctx == "add_trustee" && g_idx(g_trustees, k) != -1) jump skip_current;
+                if (ctx == "blacklist" && g_idx(g_blacklist, k) != -1) jump skip_current;
+                cands += k;
+            }
+            @skip_current;
+
+            if (llGetListLength(cands) == 0)
+            {
+                show_info_dialog(av, "No avatars found within 10 meters.", dialog_chan);
+                s_clear(av);
                 return;
             }
+            list labels = [];
+            integer k;
+            for (k = 0; k < llGetListLength(cands); ++k)
+                labels += llKey2Name(llList2Key(cands, k));
+            string dialog_body = "";
+            if (ctx == "add_owner") dialog_body = "Select your new primary owner:\n";
+            else if (ctx == "add_trustee") dialog_body = "Select a trustee:\n";
+            else if (ctx == "blacklist") dialog_body = "Blacklist an avatar:\n";
+            dialog_body += numbered_menu_text(labels);
+            list buttons = build_numbered_buttons(labels);
+            string cands_csv = llDumpList2String(cands, ",");
+            s_set(av, 0, cands_csv, llGetUnixTime() + dialog_timeout, ctx, "", "", cands_csv, dialog_chan);
+            llDialog(av, dialog_body, buttons, dialog_chan);
+            return;
         }
     }
+}
+
     no_sensor()
     {
         integer i;
-        for (i=0; i<llGetListLength(g_sessions); i+=10) {
+        for (i = 0; i < llGetListLength(g_sessions); i += 10)
+        {
             key av = llList2Key(g_sessions, i);
-            string ctx = llList2String(g_sessions, i+4);
-            integer dialog_chan = llList2Integer(g_sessions, i+8);
-            if (ctx == "add_owner" || ctx == "add_trustee" || ctx == "blacklist") {
+            string ctx = llList2String(g_sessions, i + 4);
+            integer dialog_chan = llList2Integer(g_sessions, i + 8);
+            if (ctx == "add_owner" || ctx == "add_trustee" || ctx == "blacklist")
+            {
                 show_info_dialog(av, "No avatars found within 10 meters.", dialog_chan);
                 s_clear(av);
             }
         }
     }
+
     listen(integer chan, string nm, key av, string msg)
     {
         list sess = s_get(av);
@@ -353,7 +380,7 @@ default
         if (sel != -1 && sel < llGetListLength(allowed)) {
             action = llList2String(allowed, sel);
 
-            if (ctx == PLUGIN_CTX) {
+            if (ctx == PLUGIN_CONTEXT) {
                 if (action == "Add Owner")        { begin_add_owner(av, dialog_chan); return; }
                 if (action == "Release Sub")      { begin_release_sub(av, dialog_chan); return; }
                 if (action == "Add Trustee")      { begin_add_trustee(av, dialog_chan); return; }
@@ -369,11 +396,6 @@ default
                 return;
             }
         }
-
-        // All dialog ctx handlers remain as in previous script...
-
-        // (Paste all original context branches here, unchanged except for ctx value to use PLUGIN_CTX where relevant)
-        // (No other code changes necessary in the context branches.)
 
         // --- ADD OWNER ---
         if (ctx == "add_owner") {
@@ -573,7 +595,7 @@ default
                 g_public_access = TRUE;
                 show_info_dialog(av, "Public access is now ENABLED.", dialog_chan);
                 s_clear(av);
-                sync_state_to_guh();                
+                sync_state_to_guh();
                 return;
             }
             if (msg == "Disable") {
@@ -599,7 +621,12 @@ default
             if (msg == "Cancel") { s_clear(av); return; }
         }
     }
-    timer() { timeout_check(); }
+
+    timer()
+    {
+        timeout_check();
+    }
+
     changed(integer change)
     {
         if (change & CHANGED_OWNER)
