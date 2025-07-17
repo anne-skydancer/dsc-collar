@@ -45,18 +45,11 @@ list s_get(key av)
 /* ==================== MENU/UI ==================== */
 show_main_menu(key av, integer chan)
 {
-    /* Owner exception button text (no ternaries) */
-    string im_btn;
-    if (ex_owner_im) im_btn = "Allow IM";
-    else im_btn = "Deny IM";
-
-    string tp_btn;
-    if (ex_owner_tp) tp_btn = "Force TP ON";
-    else tp_btn = "Force TP OFF";
-
-    // Pad as needed (minimal 3x3)
-    list btns = [im_btn, " ", tp_btn, " ", "Back"];
-    while (llGetListLength(btns) < 9) btns += [" "];
+    string im_btn = ex_owner_im ? "Allow IM" : "Deny IM";
+    string tp_btn = ex_owner_tp ? "Force TP ON" : "Force TP OFF";
+    // Top options first, then Back (index 0), blank (1), Cancel (2)
+    list btns = [ "Back", " ", "Cancel", im_btn, tp_btn ];
+    while (llGetListLength(btns) % 3 != 0) btns += " ";
 
     s_set(av, 0, llGetUnixTime()+120.0, "main", "", chan);
 
@@ -114,8 +107,7 @@ default
         {
             if (msg == "Allow IM" || msg == "Deny IM")
             {
-                if (ex_owner_im) ex_owner_im = FALSE;
-                else ex_owner_im = TRUE;
+                ex_owner_im = !ex_owner_im;
                 // TODO: Actually send @sendim:<uuid>=add/rem to enforce
                 if (DEBUG) llOwnerSay("[RLV] Owner IM Exception now: " + (string)ex_owner_im);
                 show_main_menu(av, chan);
@@ -123,8 +115,7 @@ default
             }
             if (msg == "Force TP ON" || msg == "Force TP OFF")
             {
-                if (ex_owner_tp) ex_owner_tp = FALSE;
-                else ex_owner_tp = TRUE;
+                ex_owner_tp = !ex_owner_tp;
                 // TODO: Actually send @accepttp:<uuid>=add/rem to enforce
                 if (DEBUG) llOwnerSay("[RLV] Owner TP Exception now: " + (string)ex_owner_tp);
                 show_main_menu(av, chan);
@@ -133,6 +124,11 @@ default
             if (msg == "Back")
             {
                 llMessageLinked(LINK_THIS, 510, "rlv|" + (string)av + "|" + (string)chan, NULL_KEY);
+                s_clear(av);
+                return;
+            }
+            if (msg == "Cancel")
+            {
                 s_clear(av);
                 return;
             }
