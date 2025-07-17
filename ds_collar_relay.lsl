@@ -165,7 +165,7 @@ list s_get(key av) {
     integer i = s_idx(av); if (~i) return llList2List(g_sessions,i,i+9); return [];
 }
 
-/* ========== MENU/UI (BOTTOM-UP ORDER) ========== */
+/* ========== MENU/UI (BOTTOM-UP ORDER, SPEC-COMPLIANT) ========== */
 list relay_menu_btns(integer acl)
 {
     // Build bottom-up for LSL dialog layout
@@ -209,12 +209,14 @@ show_relay_menu(key av, integer chan)
 }
 list mode_menu_btns()
 {
-    // Bottom row: Cancel centered
-    list btns = [ " ", "Cancel", " " ];
-    // Row above: Set Off, Set On, Hardcore toggle
+    // Bottom row: Cancel at index 2, OK at index 0, pad at 1 if needed
+    // But for mode select, we only need Cancel at index 2, " " at index 1, rest top
+    list btns = [ "OK", " ", "Cancel" ]; // For direct confirmations, not here, but keeping order clear
+    // Row above: Set Off, Set On, Hardcore toggle (they go top/above)
     string hc_btn;
     if (g_hardcore == TRUE) hc_btn = "Hardcore OFF";
     else hc_btn = "Hardcore ON";
+    btns = [ " ", "Cancel", " " ]; // bottom row for the dialog, Cancel at index 2, as per spec
     btns += [ "Set Off", "Set On", hc_btn ];
     return btns;
 }
@@ -262,7 +264,7 @@ show_hardcore_confirm_owner(key av, integer chan)
     s_set(av, 0, "", llGetUnixTime()+60.0, "hardcore_owner", "", "", "", chan);
     llDialog(av,
         "WARNING - Activating hardcore mode will leave the sub unable to extricate from any restraining furniture. Are you sure?",
-        [ "Cancel", "OK", " " ], chan);
+        [ "OK", " ", "Cancel" ], chan);
 }
 show_safeword_confirm(key av, integer chan)
 {
@@ -272,12 +274,12 @@ show_safeword_confirm(key av, integer chan)
         return;
     }
     s_set(av, 0, "", llGetUnixTime()+30.0, "safeword_confirm", "", "", "", chan);
-    llDialog(av, "This action will safeword you out of the restraints holding you. Please confirm your choice:", [ "Cancel", "OK", " " ], chan);
+    llDialog(av, "This action will safeword you out of the restraints holding you. Please confirm your choice:", [ "OK", " ", "Cancel" ], chan);
 }
 show_unbind_confirm(key av, integer chan)
 {
     s_set(av, 0, "", llGetUnixTime()+30.0, "unbind_confirm", "", "", "", chan);
-    llDialog(av, "This action will unbind the sub from their predicament. Please confirm your choice:", [ "Cancel", "OK", " " ], chan);
+    llDialog(av, "This action will unbind the sub from their predicament. Please confirm your choice:", [ "OK", " ", "Cancel" ], chan);
 }
 unbind_all()
 {
