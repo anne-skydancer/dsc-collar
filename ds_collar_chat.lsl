@@ -172,9 +172,8 @@ integer handle_chat_command(string cmd, key av, integer chan)
         else dialog += "enable";
         dialog += " public chat listening?";
         list buttons = [];
-        if (g_public_listener) buttons = [ "Disable", "Cancel" ];
-        else buttons = [ "Enable", "Cancel" ];
-        while (llGetListLength(buttons) % 3 != 0) buttons += " ";
+        if (g_public_listener) buttons = [ "Disable", " ", "Cancel" ];
+        else buttons = [ "Enable", " ", "Cancel" ];
         s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "toggle_public_confirm", "", "", "", chan);
         llDialog(av, dialog, buttons, chan);
         return TRUE;
@@ -317,9 +316,8 @@ default
                 else dialog += "enable";
                 dialog += " public chat listening?";
                 list buttons = [];
-                if (g_public_listener) buttons = [ "Disable", "Cancel" ];
-                else buttons = [ "Enable", "Cancel" ];
-                while (llGetListLength(buttons) % 3 != 0) buttons += " ";
+                if (g_public_listener) buttons = [ "Disable", " ", "Cancel" ];
+                else buttons = [ "Enable", " ", "Cancel" ];
                 s_set(av, 0, "", llGetUnixTime() + dialog_timeout, "toggle_public_confirm", "", "", "", chan);
                 llDialog(av, dialog, buttons, chan);
                 return;
@@ -339,14 +337,14 @@ default
             if (msg == "Enable")
             {
                 enable_public_listener();
-                llDialog(av, "Public chat is now ENABLED.", [ "OK" ], chan);
+                llDialog(av, "Public chat is now ENABLED.", [ " ", "OK", " " ], chan);
                 s_clear(av);
                 return;
             }
             if (msg == "Disable")
             {
                 disable_public_listener();
-                llDialog(av, "Public chat is now DISABLED.", [ "OK" ], chan);
+                llDialog(av, "Public chat is now DISABLED.", [ " ", "OK", " " ], chan);
                 s_clear(av);
                 return;
             }
@@ -369,12 +367,12 @@ default
                 enable_prefix_listener(); // Will always clear & set up a new listener
                 enable_public_listener(); // (if you want to auto-enable)
 
-                llDialog(av, "Prefix set to: " + g_prefix + "\n\nYou may now use public chat commands.", [ "OK" ], chan);
+                llDialog(av, "Prefix set to: " + g_prefix + "\n\nYou may now use public chat commands.", [ " ", "OK", " " ], chan);
                 s_clear(av);
             }
             else
             {
-                llDialog(av, "Prefix must be 2-5 characters. Try again.", [ "OK" ], chan);
+                llDialog(av, "Prefix must be 2-5 characters. Try again.", [ " ", "OK", " " ], chan);
             }
             return;
         }
