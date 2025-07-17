@@ -7,7 +7,7 @@
 /* ================= UNIVERSAL HEADER ================= */
 integer DEBUG = TRUE;
 
-integer PLUGIN_SN       = o; // Serial will be assigned on state_entry
+integer PLUGIN_SN       = 0; // Serial will be assigned on state_entry
 string  PLUGIN_LABEL    = "Access";
 integer PLUGIN_MIN_ACL  = 3;
 string  PLUGIN_CTX      = "core_access";
