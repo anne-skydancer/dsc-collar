@@ -19,7 +19,7 @@ list CAT_TRAVEL = [ "@tptlm", "@tploc", "@tplure" ];
 list CAT_OTHER  = [ "@edit", "@rez", "@touchall", "@touchworld", "@accepttp", "@shownames", "@sit", "@unsit", "@stand" ];
 
 list LABEL_INV    = [ "Det. All:", "+ Outfit:", "- Outfit:", "- Attach:", "+ Attach:", "Att. All:", "Inv:", "Notes:", "Scripts:" ];
-list LABEL_SPEECH = [ "Chat:", "Recv IM:", "Send IM:", "Start IM:", "Shout:", "Whisper:" ]; // << FIXED HERE
+list LABEL_SPEECH = [ "Chat:", "Recv IM:", "Send IM:", "Start IM:", "Shout:", "Whisper:" ];
 list LABEL_TRAVEL = [ "Map TP:", "Loc. TP:", "TP:" ];
 list LABEL_OTHER  = [ "Edit:", "Rez:", "Touch:", "Touch Wld:", "OK TP:", "Names:", "Sit:", "Unsit:", "Stand:" ];
 
@@ -61,20 +61,17 @@ toggle_restriction(string restr_cmd, integer acl) {
     if (ridx != -1)
     {
         g_restrictions = llDeleteSubList(g_restrictions, ridx, ridx);
-        // REMOVE restriction: Use correct removal command!
         llOwnerSay(restr_cmd + "=rem");
         if (DEBUG) llOwnerSay("[RLV] REMOVED: " + restr_cmd + "=rem");
     }
     else if (llGetListLength(g_restrictions) < MAX_RESTRICTIONS)
     {
         g_restrictions += [ restr_cmd ];
-        // APPLY restriction: Use =n for most (per your API rule)
         llOwnerSay(restr_cmd + "=n");
         if (DEBUG) llOwnerSay("[RLV] FORCED: " + restr_cmd + "=n");
     }
     if (DEBUG) llOwnerSay("[RLV] Restriction list now: " + llDumpList2String(g_restrictions, ","));
 }
-
 
 /* --------- Label helpers ---------- */
 string get_label_for_command(string cmd, list cat_cmds, list cat_labels)
@@ -143,9 +140,7 @@ list make_category_buttons(list cat_cmds, list cat_labels, integer page)
             btns += [ get_short_label(cmd, restr_on, cat_cmds, cat_labels) ];
         }
     }
-    // Fill up to exactly DIALOG_PAGE_SIZE (9) with blanks
     while (llGetListLength(btns) < DIALOG_PAGE_SIZE) btns += [ " " ];
-    // Never return more than 9
     if (llGetListLength(btns) > DIALOG_PAGE_SIZE) btns = llList2List(btns, 0, DIALOG_PAGE_SIZE - 1);
     return btns;
 }
@@ -154,11 +149,9 @@ list make_category_buttons(list cat_cmds, list cat_labels, integer page)
 show_main_menu(key av, integer chan) {
     integer acl = get_acl(av);
     if (acl > ACL_WEARER) return;
-    // Place [Inventory] [Speech] [Travel] on row 3; [Other] [Safeword] [Exceptions] on row 2; [    ] [Back] [    ] on row 1
-    list btns = [ " ", "    Back    ", " ",
+    list btns = [ " ", "Back", " ",
                   "Other", "Safeword", "Exceptions",
                   "Inventory", "Speech", "Travel" ];
-    // No need to pad to 9, we are at 9
     s_set(av, 0, "", llGetUnixTime()+180.0, "main", "", "", "", chan);
     if (DEBUG) llOwnerSay("[DEBUG] show_main_menu → " + (string)av + " chan=" + (string)chan + " btns=" + llDumpList2String(btns, ","));
     llDialog(av, "RLV Restriction Menu:\nSelect a category:", btns, chan);
@@ -180,7 +173,7 @@ show_category_menu(key av, integer chan, string catname, integer page)
     if (page > 0) prev = "<<";
     if (page < max_page) next = ">>";
 
-    list btns = [ prev, "    Back    ", next ];
+    list btns = [ prev, "Back", next ];
     btns += make_category_buttons(catlist, catlabels, page);
 
     if (DEBUG) llOwnerSay("[DEBUG] show_category_menu: cat=" + catname + " page=" + (string)page + " btns=" + llDumpList2String(btns, ","));
@@ -277,12 +270,11 @@ default
             if(msg == "Other"){ show_category_menu(av, chan, "Other", 0); return; }
             if(msg == "Exceptions"){ /* exceptions */ return; }
             if(msg == "Safeword" && acl <= ACL_WEARER){
-                g_restrictions = [];
-                llOwnerSay("@clear");
-                llDialog(av, "All restrictions cleared by Safeword.", ["    Back    "], chan);
+                llDialog(av, "Are you sure you want to safeword and clear all restrictions?", [ "OK", " ", "Cancel" ], chan);
+                s_set(av, 0, "", llGetUnixTime()+30.0, "safeword_confirm", "", "", "", chan);
                 return;
             }
-            if(msg == "    Back    "){
+            if(msg == "Back"){
                 llMessageLinked(LINK_THIS, 510, "apps|" + (string)av + "|" + (string)chan, NULL_KEY);
                 s_clear(av);
                 return;
@@ -300,7 +292,7 @@ default
             integer num_items = llGetListLength(cat_cmds);
             integer max_page = (num_items - 1) / DIALOG_PAGE_SIZE;
 
-            if(msg == "    Back    "){ show_main_menu(av, chan); return; }
+            if(msg == "Back"){ show_main_menu(av, chan); return; }
             if(msg == "<<" && page > 0){ show_category_menu(av, chan, catname, page - 1); return; }
             if(msg == ">>" && page < max_page){ show_category_menu(av, chan, catname, page + 1); return; }
 
@@ -313,12 +305,25 @@ default
                 return;
             }
         }
+        if(ctx == "safeword_confirm")
+        {
+            if(msg == "OK"){
+                g_restrictions = [];
+                llOwnerSay("@clear");
+                llDialog(av, "All restrictions cleared by Safeword.", [ " ", "OK", " " ], chan);
+                s_clear(av);
+                return;
+            }
+            if(msg == "Cancel"){
+                s_clear(av);
+                return;
+            }
+        }
     }
     timer(){ timeout_check(); }
 
     changed(integer change)
     {
-        /* Block-style: handle ownership change */
         if (change & CHANGED_OWNER)
         {
             llResetScript();
