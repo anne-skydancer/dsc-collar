@@ -21,7 +21,8 @@ integer g_public_access      = FALSE;
 integer g_locked             = FALSE;
 integer g_owner_online       = FALSE;
 key     g_wearer             = NULL_KEY;
-
+list g_plugin_queue          = [];
+integer g_registering        = FALSE;
 
 list    g_apps_btns;
 list    g_apps_ctxs;
@@ -32,12 +33,28 @@ string  g_relay_state         = "";
 
 /* --------- Small helpers --------- */
 
-reset_all_plugins()
+process_next_plugin()
 {
-    llOwnerSay("Collar: resetting all modules...");
-    llMessageLinked(LINK_SET, -900, "reset_owner", NULL_KEY);
-    // Do not call llResetScript() here; the script will reset itself on receipt.
+    if (llGetListLength(g_plugin_queue) == 0)
+    {
+        g_registering = FALSE;
+        if(DEBUG) llOwnerSay("[CORE] All plugins registered.");
+        return;
+    }
+    
+    g_registering = TRUE;
+    
+    integer sn      = llList2Integer(g_plugin_queue, 0);
+    string label    = llList2String(g_plugin_queue, 1);
+    integer min_acl = llList2Integer(g_plugin_queue, 2);
+    string ctx      = llList2String(g_plugin_queue, 3);
+    
+    add_plugin(sn, label, min_acl, ctx);
+    if (DEBUG) llOwnerSay("[CORE] Registered plugin: " + label + ", serial " + (string)sn);
+    g_plugin_queue = llDeleteSubList(g_plugin_queue, 0, 3);
+    llSetTimerEvent(0.1);
 }
+
 integer s_idx(key av) { 
     return llListFindList(g_sessions, [av]); 
 }
@@ -399,12 +416,6 @@ default
     link_message(integer sn, integer num, string str, key id)
     {
         // -- Reset handler: accept broadcast, do not rebroadcast --
-        if(num == -900 && str == "reset_owner")
-        {
-            llResetScript();
-            return;
-        }
-
         if(num == 500)
         {
             list p = llParseStringKeepNulls(str, ["|"], []);
@@ -414,11 +425,16 @@ default
                 string label = llList2String(p, 2);
                 integer min_acl = (integer)llList2Integer(p, 3);
                 string ctx = llList2String(p, 4);
-
-                add_plugin(sn, label, min_acl, ctx);
-                if(DEBUG) llOwnerSay("[PLUGIN] Registered " + "named " + label + " serial " + llList2String(p, 1) + " with min. ACL= " + (string)min_acl + " context " + ctx);
+                
+                g_plugin_queue += [sn, label, min_acl, ctx];
+                
+                if (!g_registering)
+                {
+                    process_next_plugin();
+                }
             }
         }
+
         else if(num == 501 && str == "unregister"){ 
             remove_plugin(sn); 
         }
@@ -578,7 +594,18 @@ default
         }
     }
 
-    timer(){ timeout_check(); }
+    timer()
+    {
+        if (g_registering)
+        {
+            llSetTimerEvent(0);
+            process_next_plugin();
+        }
+        else
+        {
+            timeout_check();
+        }
+    }
 
     changed(integer change)
     {
