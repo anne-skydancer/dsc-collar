@@ -19,6 +19,9 @@ list    g_trustee_honorifics = [];
 list    g_blacklist          = [];
 integer g_public_access      = FALSE;
 integer g_locked             = FALSE;
+integer g_owner_online       = FALSE;
+key     g_wearer             = NULL_KEY;
+
 
 list    g_apps_btns;
 list    g_apps_ctxs;
@@ -98,6 +101,82 @@ remove_plugin(integer sn){
     }
 }
 
+display_welcome(key wearer_id)
+{
+    string line1 = "Welcome to D/s Collar.";
+    string line2;
+    string line3 = "";
+    key target;
+
+    if (g_owner == NULL_KEY)
+    {
+        line2 = "You are uncommitted to an owner.";
+    }
+    else
+    {
+        line2 = "You are owned by " + g_owner_honorific + " " + llKey2Name(g_owner) + ".";
+
+        if (g_owner_online)
+        {
+            line3 = "Your " + g_owner_honorific + " is online.";
+        }
+    }
+
+    string message = line1 + "\n" + line2;
+    if (line3 != "")
+    {
+        message += "\n" + line3;
+    }
+
+    if (wearer_id != NULL_KEY)
+    {
+        target = wearer_id;
+    }
+    else
+    {
+        target = g_wearer;
+    }
+
+    if (target != NULL_KEY)
+    {
+        llInstantMessage(target, message);
+        if (DEBUG) llOwnerSay("[CORE] Welcome message sent to wearer " + (string)target + ":\n" + message);
+    }
+    else
+    {
+        if (DEBUG) llOwnerSay("[CORE] No wearer found to send welcome message.");
+    }
+}
+
+check_owner()
+{
+    // Find wearer from session list
+    if (llGetListLength(g_sessions) >= 10)
+    {
+        g_wearer = llList2Key(g_sessions, 0);
+    }
+    else
+    {
+        g_wearer = NULL_KEY;
+    }
+
+    if (g_wearer == NULL_KEY)
+    {
+        if (DEBUG) llOwnerSay("[CORE] No wearer session found, skipping welcome.");
+        return;
+    }
+
+    if (g_owner != NULL_KEY)
+    {
+        llRequestAgentData(g_owner, DATA_ONLINE);
+    }
+    else
+    {
+        g_owner_online = FALSE;
+        display_welcome(llGetOwner());
+    }
+}
+
 /* --------- Menu builders --------- */
 list core_btns(){ return ["Status","RLV","Apps"]; }
 list core_ctxs(){ return ["status","rlv","apps"]; }
@@ -162,7 +241,7 @@ show_main_menu(key av)
 // RLV submenu
 show_rlv(key av, integer chan){
     if (llGetListLength(g_rlv_btns) == 0) {
-        llDialog(av, "No RLV plugins installed.", [ " ", "OK", " " ], chan);
+        llDialog(av, "No RLV plugins installed.", [" ", "OK", " "], chan);
         return;
     }
     list btns = g_rlv_btns + ["Back"];
@@ -178,7 +257,7 @@ show_rlv(key av, integer chan){
 // Apps submenu using registered apps
 show_apps(key av, integer chan){
     if (llGetListLength(g_apps_btns) == 0) {
-        llDialog(av, "No apps installed.", [ " ", "OK", " " ], chan);
+        llDialog(av, "No apps installed.", [" ", "OK", " "], chan);
         return;
     }
     list btns = g_apps_btns + ["Back"];
@@ -211,7 +290,7 @@ show_status(key av, integer chan)
     if(g_locked)        t += "Locked: YES\n";
     else                t += "Locked: NO\n";
 
-    llDialog(av, t, [ " ", "OK", " " ], chan);
+    llDialog(av, t, [" ", "OK", " "], chan);
 }
 
 show_lock_dialog(key av, integer chan){
@@ -219,10 +298,10 @@ show_lock_dialog(key av, integer chan){
     list buttons;
     if(g_locked){
         txt = "The collar is currently LOCKED.\nUnlock the collar?";
-        buttons = [ "Unlock", " ", "Cancel" ];
+        buttons = ["Unlock", "Cancel"];
     }else{
         txt = "The collar is currently UNLOCKED.\nLock the collar?";
-        buttons = [ "Lock", " ", "Cancel" ];
+        buttons = ["Lock", "Cancel"];
     }
     while(llGetListLength(buttons) % 3 != 0) buttons += " ";
     sess_set(av, 0, "", llGetUnixTime() + dialog_timeout,
@@ -281,6 +360,24 @@ default
         llSetTimerEvent(1.0);
         update_lock_state();
         llMessageLinked(LINK_THIS, 530, "relay_load", NULL_KEY);
+        if (llGetAttached() != 0)
+        {
+            key wearer = llGetOwner();
+            display_welcome(wearer);
+            check_owner();
+        }
+    }
+    
+    attach(key id)
+    {
+        if (llGetAttached() !=0)
+        {
+            check_owner();
+        }
+        else
+        {
+            if (DEBUG) llOwnerSay ("[CORE} Collar detached.");
+        }
     }
 
     touch_start(integer n)
@@ -289,11 +386,11 @@ default
         integer acl = get_acl(toucher);
 
         if (acl == 5) {
-            llDialog(toucher, "This collar is restricted.", [ " ", "OK", " " ], -1);
+            llDialog(toucher, "This collar is restricted.", ["OK"], -1);
             return;
         }
         if (acl == 4 && !g_public_access) {
-            llDialog(toucher, "This collar is restricted.", [ " ", "OK", " " ], -1);
+            llDialog(toucher, "This collar is restricted.", ["OK"], -1);
             return;
         }
         show_main_menu(toucher);
@@ -471,7 +568,7 @@ default
                          "lock_confirm", "", "", "", confirm_chan);
                 string lock_state = "Collar is now ";
                 if(g_locked) lock_state += "LOCKED."; else lock_state += "UNLOCKED.";
-                llDialog(av, lock_state, [ " ", "OK", " " ], confirm_chan);
+                llDialog(av, lock_state, ["OK"], confirm_chan);
                 return;
             }
             if(msg == "Cancel"){ sess_clear(av); }
