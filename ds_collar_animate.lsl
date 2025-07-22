@@ -177,7 +177,7 @@ default
     {
         PLUGIN_SN = 100000 + (integer)(llFrand(899999));
         llMessageLinked(LINK_THIS, 500,
-            "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
+            "register"  "|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
             (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT,
             NULL_KEY);
         llRequestPermissions(llGetOwner(), PERMISSION_TRIGGER_ANIMATION);
@@ -193,11 +193,6 @@ default
 
     link_message(integer sn, integer num, string str, key id)
     {
-        if (num == -900 && str == "reset_owner")
-        {
-            llResetScript();
-            return;
-        }
         // GUH: "apps_animate|user|chan"
         list p = llParseString2List(str, ["|"], []);
         if (llList2String(p, 0) == PLUGIN_CONTEXT && llGetListLength(p) >= 3)
@@ -221,7 +216,7 @@ default
         if (msg == "Main")
         {
             // Return to main menu in GUH (link_message 510 is the plugin signal used)
-            llMessageLinked(LINK_THIS, 510, "main|" + (string)id + "|0", NULL_KEY);
+            llMessageLinked(LINK_THIS, 510, "apps" + "|" + (string)id + "|" + "0", NULL_KEY);
             return;
         }
         if (msg == "Relax")
