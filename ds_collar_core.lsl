@@ -261,13 +261,14 @@ show_rlv(key av, integer chan){
         llDialog(av, "No RLV plugins installed.", [" ", "OK", " "], chan);
         return;
     }
-    list btns = g_rlv_btns + ["Back"];
-    list ctxs = g_rlv_ctxs + ["back"];
+    // Prepend back button row at bottom:
+    list btns = [" ", "Back", " "] + g_rlv_btns;
+    list ctxs = [" ", "back", " "] + g_rlv_ctxs;
+
     while (llGetListLength(btns) % 3 != 0) btns += " ";
-    sess_set(av, 0, "",
-        llGetUnixTime() + dialog_timeout,
-        "rlv", "", "",
-        llDumpList2String(ctxs, ","), chan);
+    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
+    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "rlv", "", "", llDumpList2String(ctxs, ","), chan);
     llDialog(av, "RLV Menu:", btns, chan);
 }
 
@@ -277,15 +278,17 @@ show_apps(key av, integer chan){
         llDialog(av, "No apps installed.", [" ", "OK", " "], chan);
         return;
     }
-    list btns = g_apps_btns + ["Back"];
-    list ctxs = g_apps_ctxs + ["back"];
+    // Prepend back button row at bottom:
+    list btns = [" ", "Back", " "] + g_apps_btns;
+    list ctxs = [" ", "back", " "] + g_apps_ctxs;
+
     while (llGetListLength(btns) % 3 != 0) btns += " ";
-    sess_set(av, 0, "",
-        llGetUnixTime() + dialog_timeout,
-        "apps", "", "",
-        llDumpList2String(ctxs, ","), chan);
+    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
+    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "apps", "", "", llDumpList2String(ctxs, ","), chan);
     llDialog(av, "Apps Menu:", btns, chan);
 }
+
 
 /* --------- Dialogs --------- */
 show_status(key av, integer chan)
@@ -540,41 +543,49 @@ default
             }
         }
         else if(ctx == "rlv"){
-            // RLV submenu
             list ctxs = llParseString2List(menucsv, [","], []);
-            list btns = g_rlv_btns + ["Back"];
-            while(llGetListLength(btns) % 3 != 0) btns += " ";
-            integer sel = llListFindList(btns, [msg]);
-            if(sel == -1) return;
-            string act = llList2String(ctxs, sel);
+            list btns = [" ", "Back", " "] + g_rlv_btns;
+            ctxs = [" ", "back", " "] + ctxs;
 
-            if(act == "back"){
-                show_main_menu(av);
-                return;
-            }
-            list pi = llParseString2List(act, ["|"], []);
-            if(llGetListLength(pi) == 2){
-                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
-            }
-        }
-        else if(ctx == "apps"){
-            // Apps submenu
-            list ctxs = llParseString2List(menucsv, [","], []);
-            list btns = g_apps_btns + ["Back"];
             while(llGetListLength(btns) % 3 != 0) btns += " ";
-            integer sel = llListFindList(btns, [msg]);
-            if(sel == -1) return;
-            string act = llList2String(ctxs, sel);
+            while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
 
-            if(act == "back"){
-                show_main_menu(av);
-                return;
-            }
-            list pi = llParseString2List(act, ["|"], []);
-            if(llGetListLength(pi) == 2){
-                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
-            }
+        integer sel = llListFindList(btns, [msg]);
+        if(sel == -1) return;
+        string act = llList2String(ctxs, sel);
+
+        if(act == "back"){
+            show_main_menu(av);
+            return;
         }
+
+        list pi = llParseString2List(act, ["|"], []);
+        if(llGetListLength(pi) == 2){
+            llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
+        }
+    }
+    else if(ctx == "apps"){
+        list ctxs = llParseString2List(menucsv, [","], []);
+        list btns = [" ", "Back", " "] + g_apps_btns;
+        ctxs = [" ", "back", " "] + ctxs;
+
+        while(llGetListLength(btns) % 3 != 0) btns += " ";
+        while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
+        integer sel = llListFindList(btns, [msg]);
+        if(sel == -1) return;
+        string act = llList2String(ctxs, sel);
+
+        if(act == "back"){
+            show_main_menu(av);
+            return;
+        }
+
+        list pi = llParseString2List(act, ["|"], []);
+        if(llGetListLength(pi) == 2){
+            llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
+        }
+    }
         else if(ctx == "lock_toggle"){
             if(msg == "Lock"){   g_locked = TRUE;  update_lock_state(); }
             if(msg == "Unlock"){ g_locked = FALSE; update_lock_state(); }
