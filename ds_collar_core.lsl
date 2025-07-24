@@ -1,7 +1,7 @@
 /* =============================================================
    TITLE: ds_collar_core - Core logic                             
    VERSION: 1.3 (Plugin registration queue added)
-   REVISION: 2025-07-25
+   REVISION: 2025-07-25 (Lock button duplication fix)
    ============================================================= */
 
 integer DEBUG = TRUE;
@@ -178,8 +178,8 @@ remove_plugin(integer sn){
 }
 
 /* --------- Menu builders --------- */
-list core_btns(){ return ["Status","RLV","Apps","Access","Lock"]; }
-list core_ctxs(){ return ["status","rlv","apps","access","lock"]; }
+list core_btns(){ return ["Status","RLV","Apps","Access"]; }  // <-- PATCHED
+list core_ctxs(){ return ["status","rlv","apps","access"]; }  // <-- PATCHED
 
 show_main_menu(key av)
 {
