@@ -21,8 +21,7 @@ integer g_public_access      = FALSE;
 integer g_locked             = FALSE;
 integer g_owner_online       = FALSE;
 key     g_wearer             = NULL_KEY;
-list g_plugin_queue          = [];
-integer g_registering        = FALSE;
+
 
 list    g_apps_btns;
 list    g_apps_ctxs;
@@ -33,28 +32,12 @@ string  g_relay_state         = "";
 
 /* --------- Small helpers --------- */
 
-process_next_plugin()
+reset_all_plugins()
 {
-    if (llGetListLength(g_plugin_queue) == 0)
-    {
-        g_registering = FALSE;
-        if(DEBUG) llOwnerSay("[CORE] All plugins registered.");
-        return;
-    }
-    
-    g_registering = TRUE;
-    
-    integer sn      = llList2Integer(g_plugin_queue, 0);
-    string label    = llList2String(g_plugin_queue, 1);
-    integer min_acl = llList2Integer(g_plugin_queue, 2);
-    string ctx      = llList2String(g_plugin_queue, 3);
-    
-    add_plugin(sn, label, min_acl, ctx);
-    if (DEBUG) llOwnerSay("[CORE] Registered plugin: " + label + ", serial " + (string)sn);
-    g_plugin_queue = llDeleteSubList(g_plugin_queue, 0, 3);
-    llSetTimerEvent(0.1);
+    llOwnerSay("Collar: resetting all modules...");
+    llMessageLinked(LINK_SET, -900, "reset_owner", NULL_KEY);
+    // Do not call llResetScript() here; the script will reset itself on receipt.
 }
-
 integer s_idx(key av) { 
     return llListFindList(g_sessions, [av]); 
 }
@@ -261,14 +244,13 @@ show_rlv(key av, integer chan){
         llDialog(av, "No RLV plugins installed.", [" ", "OK", " "], chan);
         return;
     }
-    // Prepend back button row at bottom:
-    list btns = [" ", "Back", " "] + g_rlv_btns;
-    list ctxs = [" ", "back", " "] + g_rlv_ctxs;
-
+    list btns = g_rlv_btns + ["Back"];
+    list ctxs = g_rlv_ctxs + ["back"];
     while (llGetListLength(btns) % 3 != 0) btns += " ";
-    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
-
-    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "rlv", "", "", llDumpList2String(ctxs, ","), chan);
+    sess_set(av, 0, "",
+        llGetUnixTime() + dialog_timeout,
+        "rlv", "", "",
+        llDumpList2String(ctxs, ","), chan);
     llDialog(av, "RLV Menu:", btns, chan);
 }
 
@@ -278,17 +260,15 @@ show_apps(key av, integer chan){
         llDialog(av, "No apps installed.", [" ", "OK", " "], chan);
         return;
     }
-    // Prepend back button row at bottom:
-    list btns = [" ", "Back", " "] + g_apps_btns;
-    list ctxs = [" ", "back", " "] + g_apps_ctxs;
-
+    list btns = g_apps_btns + ["Back"];
+    list ctxs = g_apps_ctxs + ["back"];
     while (llGetListLength(btns) % 3 != 0) btns += " ";
-    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
-
-    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "apps", "", "", llDumpList2String(ctxs, ","), chan);
+    sess_set(av, 0, "",
+        llGetUnixTime() + dialog_timeout,
+        "apps", "", "",
+        llDumpList2String(ctxs, ","), chan);
     llDialog(av, "Apps Menu:", btns, chan);
 }
-
 
 /* --------- Dialogs --------- */
 show_status(key av, integer chan)
@@ -419,6 +399,12 @@ default
     link_message(integer sn, integer num, string str, key id)
     {
         // -- Reset handler: accept broadcast, do not rebroadcast --
+        if(num == -900 && str == "reset_owner")
+        {
+            llResetScript();
+            return;
+        }
+
         if(num == 500)
         {
             list p = llParseStringKeepNulls(str, ["|"], []);
@@ -428,16 +414,11 @@ default
                 string label = llList2String(p, 2);
                 integer min_acl = (integer)llList2Integer(p, 3);
                 string ctx = llList2String(p, 4);
-                
-                g_plugin_queue += [sn, label, min_acl, ctx];
-                
-                if (!g_registering)
-                {
-                    process_next_plugin();
-                }
+
+                add_plugin(sn, label, min_acl, ctx);
+                if(DEBUG) llOwnerSay("[PLUGIN] Registered " + "named " + label + " serial " + llList2String(p, 1) + " with min. ACL= " + (string)min_acl + " context " + ctx);
             }
         }
-
         else if(num == 501 && str == "unregister"){ 
             remove_plugin(sn); 
         }
@@ -543,49 +524,41 @@ default
             }
         }
         else if(ctx == "rlv"){
+            // RLV submenu
             list ctxs = llParseString2List(menucsv, [","], []);
-            list btns = [" ", "Back", " "] + g_rlv_btns;
-            ctxs = [" ", "back", " "] + ctxs;
-
+            list btns = g_rlv_btns + ["Back"];
             while(llGetListLength(btns) % 3 != 0) btns += " ";
-            while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+            integer sel = llListFindList(btns, [msg]);
+            if(sel == -1) return;
+            string act = llList2String(ctxs, sel);
 
-        integer sel = llListFindList(btns, [msg]);
-        if(sel == -1) return;
-        string act = llList2String(ctxs, sel);
-
-        if(act == "back"){
-            show_main_menu(av);
-            return;
+            if(act == "back"){
+                show_main_menu(av);
+                return;
+            }
+            list pi = llParseString2List(act, ["|"], []);
+            if(llGetListLength(pi) == 2){
+                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
+            }
         }
+        else if(ctx == "apps"){
+            // Apps submenu
+            list ctxs = llParseString2List(menucsv, [","], []);
+            list btns = g_apps_btns + ["Back"];
+            while(llGetListLength(btns) % 3 != 0) btns += " ";
+            integer sel = llListFindList(btns, [msg]);
+            if(sel == -1) return;
+            string act = llList2String(ctxs, sel);
 
-        list pi = llParseString2List(act, ["|"], []);
-        if(llGetListLength(pi) == 2){
-            llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
+            if(act == "back"){
+                show_main_menu(av);
+                return;
+            }
+            list pi = llParseString2List(act, ["|"], []);
+            if(llGetListLength(pi) == 2){
+                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
+            }
         }
-    }
-    else if(ctx == "apps"){
-        list ctxs = llParseString2List(menucsv, [","], []);
-        list btns = [" ", "Back", " "] + g_apps_btns;
-        ctxs = [" ", "back", " "] + ctxs;
-
-        while(llGetListLength(btns) % 3 != 0) btns += " ";
-        while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
-
-        integer sel = llListFindList(btns, [msg]);
-        if(sel == -1) return;
-        string act = llList2String(ctxs, sel);
-
-        if(act == "back"){
-            show_main_menu(av);
-            return;
-        }
-
-        list pi = llParseString2List(act, ["|"], []);
-        if(llGetListLength(pi) == 2){
-            llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
-        }
-    }
         else if(ctx == "lock_toggle"){
             if(msg == "Lock"){   g_locked = TRUE;  update_lock_state(); }
             if(msg == "Unlock"){ g_locked = FALSE; update_lock_state(); }
@@ -605,18 +578,7 @@ default
         }
     }
 
-    timer()
-    {
-        if (g_registering)
-        {
-            llSetTimerEvent(0);
-            process_next_plugin();
-        }
-        else
-        {
-            timeout_check();
-        }
-    }
+    timer(){ timeout_check(); }
 
     changed(integer change)
     {
