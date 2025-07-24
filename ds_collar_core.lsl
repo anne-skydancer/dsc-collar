@@ -173,49 +173,54 @@ show_main_menu(key av)
     llDialog(av, "Select an option:", btns, chan);
 }
 
-// --- RLV submenu ---
-show_rlv(key av, integer chan){
-    if (DEBUG) llOwnerSay("[DEBUG] show_rlv called for " + (string)av);
-    if (llGetListLength(g_rlv_btns) == 0) {
-        llDialog(av, "No RLV plugins installed.", [ " ", "OK", " " ], chan);
+// Access submenu
+show_access(key av, integer chan) {
+    if (llGetListLength(g_access_btns) == 0) {
+        llDialog(av, "No Access plugins installed.", [" ", "OK", " "], chan);
         return;
     }
-    list btns = g_rlv_btns + ["Back"];
-    list ctxs = g_rlv_ctxs + ["back"];
-    while (llGetListLength(btns) % 3 != 0) btns += " ";
-    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
-    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "rlv", "", "", llDumpList2String(ctxs, ","), chan);
-    llDialog(av, "RLV Menu:", btns, chan);
+    // Prepend placeholders and Back button equally to buttons and contexts
+    list btns = [" ", "Back", " "] + g_access_btns;
+    list ctxs = [" ", "back", " "] + g_access_ctxs;
+
+    // Pad both lists to multiple of 3 for dialog format compliance
+    while(llGetListLength(btns) % 3 != 0) btns += " ";
+    while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
+    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "access", "", "", llDumpList2String(ctxs, ","), chan);
+    llDialog(av, "Access Menu:", btns, chan);
 }
 
-// --- Apps submenu ---
-show_apps(key av, integer chan){
-    if (DEBUG) llOwnerSay("[DEBUG] show_apps called for " + (string)av);
+// Apps submenu
+show_apps(key av, integer chan) {
     if (llGetListLength(g_apps_btns) == 0) {
-        llDialog(av, "No apps installed.", [ " ", "OK", " " ], chan);
+        llDialog(av, "No apps installed.", [" ", "OK", " "], chan);
         return;
     }
-    list btns = g_apps_btns + ["Back"];
-    list ctxs = g_apps_ctxs + ["back"];
-    while (llGetListLength(btns) % 3 != 0) btns += " ";
-    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+    list btns = [" ", "Back", " "] + g_apps_btns;
+    list ctxs = [" ", "back", " "] + g_apps_ctxs;
+
+    while(llGetListLength(btns) % 3 != 0) btns += " ";
+    while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
     sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "apps", "", "", llDumpList2String(ctxs, ","), chan);
     llDialog(av, "Apps Menu:", btns, chan);
 }
 
-// --- Access submenu ---
-show_access(key av, integer chan){
-    if (DEBUG) llOwnerSay("[DEBUG] show_access called for " + (string)av);
-    if (llGetListLength(g_access_btns) == 0) {
-        llDialog(av, "No Access plugins installed.", [ " ", "OK", " " ], chan);
+// RLV submenu
+show_rlv(key av, integer chan) {
+    if (llGetListLength(g_rlv_btns) == 0) {
+        llDialog(av, "No RLV plugins installed.", [" ", "OK", " "], chan);
         return;
     }
-    list btns = g_access_btns + ["Back"];
-    list ctxs = g_access_ctxs + ["back"];
-    while (llGetListLength(btns) % 3 != 0) btns += " ";
-    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
-    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "access", "", "", llDumpList2String(ctxs, ","), chan);
-    llDialog(av, "Access Menu:", btns, chan);
+    list btns = [" ", "Back", " "] + g_rlv_btns;
+    list ctxs = [" ", "back", " "] + g_rlv_ctxs;
+
+    while(llGetListLength(btns) % 3 != 0) btns += " ";
+    while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
+    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "rlv", "", "", llDumpList2String(ctxs, ","), chan);
+    llDialog(av, "RLV Menu:", btns, chan);
 }
 
 /* --------- Dialogs --------- */
@@ -410,146 +415,135 @@ default
         }
     }   
 
-    listen(integer chan, string nm, key av, string msg)
+listen(integer chan, string nm, key av, string msg)
+{
+    list s = sess_get(av);
+    if(llGetListLength(s) == 0) return;
+    if(chan != llList2Integer(s, 8)) return;
+
+    string ctx = llList2String(s, 4);
+    string menucsv = llList2String(s, 7);
+
+    // Parse context list from CSV string for this session
+    list ctxs = llParseString2List(menucsv, [","], []);
+    
+    if (ctx == "main")
     {
-
-        list s = sess_get(av);
-        if(llGetListLength(s) == 0) return;
-        if(chan != llList2Integer(s, 8)) return;
-
-        string ctx = llList2String(s, 4);
-        string menucsv = llList2String(s, 7);
-
-        if(ctx == "main"){
-            if (DEBUG) llOwnerSay("[DEBUG] listen main menu: user=" + (string)av + ", msg=" + msg);
-
-            list ctxs = llParseString2List(menucsv, [","], []);
-            list btns = core_btns();
-            if(get_acl(av) == 1){
-                if(g_locked) btns += ["Unlock"]; else btns += ["Lock"];
-            }
-            // Add core plugins for this user
-            integer i;
-            for(i = 0; i < llGetListLength(g_plugins); i += 4){
-                integer min_acl = llList2Integer(g_plugins, i+2);
-                if(get_acl(av) > min_acl) jump skip_p2;
-                string ctx_val = llList2String(g_plugins, i+3);
-                list parts = llParseString2List(ctx_val, ["_"], []);
-                if(llGetListLength(parts) > 0 && llList2String(parts, 0) == "core")
-                    btns += [llList2String(g_plugins, i+1)];
-                @skip_p2;
-            }
-            while(llGetListLength(btns) % 3 != 0) btns += " ";
-
-            integer sel = llListFindList(btns, [msg]);
-            if(sel == -1) {
-                if (DEBUG) llOwnerSay("[DEBUG] listen main menu: unknown button msg=" + msg);
-                return;
-            }
-            string act = llList2String(ctxs, sel);
-            if (DEBUG) llOwnerSay("[DEBUG] listen main menu: resolved action=" + act);
-
-            if(act == "status"){ show_status(av, llList2Integer(s,8)); return; }
-            if(act == "rlv"){ show_rlv(av, llList2Integer(s,8)); return; }
-            if(act == "apps"){   show_apps(av, llList2Integer(s,8));   return; }
-            if(act == "access"){ show_access(av, llList2Integer(s,8)); return; }
-            if(act == "lock" || act == "unlock"){ show_lock_dialog(av, llList2Integer(s,8)); return; }
-
-            list pi = llParseString2List(act, ["|"], []);
-            if(llGetListLength(pi) == 2){
-                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
-            }
+        // Main menu handling (unchanged)
+        list btns = core_btns();
+        if(get_acl(av) == 1){
+            if(g_locked) btns += ["Unlock"]; else btns += ["Lock"];
         }
-        else if(ctx == "rlv"){
-            if (DEBUG) llOwnerSay("[DEBUG] listen rlv menu: user=" + (string)av + ", msg=" + msg);
-            list ctxs = llParseString2List(menucsv, [","], []);
-            list btns = g_rlv_btns + ["Back"];
-            while(llGetListLength(btns) % 3 != 0) btns += " ";
-            while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
-
-            integer sel = llListFindList(btns, [msg]);
-            if(sel == -1) {
-                if (DEBUG) llOwnerSay("[DEBUG] listen rlv menu: unknown button msg=" + msg);
-                return;
-            }
-            string act = llList2String(ctxs, sel);
-            if (DEBUG) llOwnerSay("[DEBUG] listen rlv menu: resolved action=" + act);
-
-            if(act == "back"){
-                show_main_menu(av);
-                return;
-            }
-            list pi = llParseString2List(act, ["|"], []);
-            if(llGetListLength(pi) == 2){
-                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
-            }
+        integer i;
+        for(i = 0; i < llGetListLength(g_plugins); i += 4){
+            integer min_acl = llList2Integer(g_plugins, i+2);
+            if(get_acl(av) > min_acl) jump skip_p2;
+            string ctx_val = llList2String(g_plugins, i+3);
+            list parts = llParseString2List(ctx_val, ["_"], []);
+            if(llGetListLength(parts) > 0 && llList2String(parts, 0) == "core")
+                btns += [llList2String(g_plugins, i+1)];
+            @skip_p2;
         }
-        else if(ctx == "apps"){
-            if (DEBUG) llOwnerSay("[DEBUG] listen apps menu: user=" + (string)av + ", msg=" + msg);
-            list ctxs = llParseString2List(menucsv, [","], []);
-            list btns = g_apps_btns + ["Back"];
-            while(llGetListLength(btns) % 3 != 0) btns += " ";
-            while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+        while(llGetListLength(btns) % 3 != 0) btns += " ";
 
-            integer sel = llListFindList(btns, [msg]);
-            if(sel == -1) {
-                if (DEBUG) llOwnerSay("[DEBUG] listen apps menu: unknown button msg=" + msg);
-                return;
-            }
-            string act = llList2String(ctxs, sel);
-            if (DEBUG) llOwnerSay("[DEBUG] listen apps menu: resolved action=" + act);
+        integer sel = llListFindList(btns, [msg]);
+        if(sel == -1) return;
 
-            if(act == "back"){
-                show_main_menu(av);
-                return;
-            }
-            list pi = llParseString2List(act, ["|"], []);
-            if(llGetListLength(pi) == 2){
-                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
-            }
-        }
-        else if(ctx == "access"){
-            if (DEBUG) llOwnerSay("[DEBUG] listen access menu: user=" + (string)av + ", msg=" + msg);
-            list ctxs = llParseString2List(menucsv, [","], []);
-            list btns = g_access_btns + ["Back"];
-            while(llGetListLength(btns) % 3 != 0) btns += " ";
-            while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+        string act = llList2String(ctxs, sel);
 
-            integer sel = llListFindList(btns, [msg]);
-            if(sel == -1) {
-                if (DEBUG) llOwnerSay("[DEBUG] listen access menu: unknown button msg=" + msg);
-                return;
-            }
-            string act = llList2String(ctxs, sel);
-            if (DEBUG) llOwnerSay("[DEBUG] listen access menu: resolved action=" + act);
+        if(act == "status"){ show_status(av, llList2Integer(s,8)); return; }
+        if(act == "rlv"){ show_rlv(av, llList2Integer(s,8)); return; }
+        if(act == "apps"){ show_apps(av, llList2Integer(s,8)); return; }
+        if(act == "access"){ show_access(av, llList2Integer(s,8)); return; }
+        if(act == "lock" || act == "unlock"){ show_lock_dialog(av, llList2Integer(s,8)); return; }
 
-            if(act == "back"){
-                show_main_menu(av);
-                return;
-            }
-            list pi = llParseString2List(act, ["|"], []);
-            if(llGetListLength(pi) == 2){
-                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
-            }
-        }
-        else if(ctx == "lock_toggle"){
-            if(msg == "Lock"){   g_locked = TRUE;  update_lock_state(); }
-            if(msg == "Unlock"){ g_locked = FALSE; update_lock_state(); }
-            if(msg == "Lock" || msg == "Unlock"){
-                integer confirm_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
-                sess_set(av, 0, "", llGetUnixTime() + dialog_timeout,
-                         "lock_confirm", "", "", "", confirm_chan);
-                string lock_state = "Collar is now ";
-                if(g_locked) lock_state += "LOCKED."; else lock_state += "UNLOCKED.";
-                llDialog(av, lock_state, [ " ", "OK", " " ], confirm_chan);
-                return;
-            }
-            if(msg == "Cancel"){ sess_clear(av); }
-        }
-        else if(ctx == "lock_confirm"){
-            if(msg == "OK"){ sess_clear(av); }
+        list pi = llParseString2List(act, ["|"], []);
+        if(llGetListLength(pi) == 2){
+            llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
         }
     }
+    else if (ctx == "rlv" || ctx == "apps" || ctx == "access")
+    {
+        // Submenu handling with placeholders: [" ", "Back", " "] + plugin buttons/contexts
+
+        // Prepare buttons list for this context:
+        list btns;
+        list plugin_btns;
+        list plugin_ctxs;
+
+        if(ctx == "rlv") {
+            btns = g_rlv_btns;
+            plugin_btns = g_rlv_btns;
+            plugin_ctxs = g_rlv_ctxs;
+        } else if(ctx == "apps") {
+            btns = g_apps_btns;
+            plugin_btns = g_apps_btns;
+            plugin_ctxs = g_apps_ctxs;
+        } else if(ctx == "access") {
+            btns = g_access_btns;
+            plugin_btns = g_access_btns;
+            plugin_ctxs = g_access_ctxs;
+        } else {
+            return; // unknown submenu context
+        }
+
+        // Construct full buttons and contexts with placeholders and Back button
+        list full_btns = [" ", "Back", " "] + btns;
+        list full_ctxs = [" ", "back", " "] + plugin_ctxs;
+
+        while(llGetListLength(full_btns) % 3 != 0) full_btns += " ";
+        while(llGetListLength(full_ctxs) % 3 != 0) full_ctxs += " ";
+
+        integer sel = llListFindList(full_btns, [msg]);
+        if(sel == -1) return;
+
+        // Handle placeholders and Back button correctly
+        if(sel == 0 || sel == 2) {
+            if(DEBUG) llOwnerSay("[DEBUG] listen " + ctx + ": placeholder button clicked, ignoring");
+            return;
+        }
+        else if(sel == 1) {
+            if(DEBUG) llOwnerSay("[DEBUG] listen " + ctx + ": Back button clicked, returning to main menu");
+            show_main_menu(av);
+            return;
+        }
+
+        // Plugin buttons start at index 3
+        integer plugin_idx = sel - 3;
+
+        // Defensive index check
+        if(plugin_idx < 0 || plugin_idx >= llGetListLength(plugin_ctxs)) {
+            if(DEBUG) llOwnerSay("[DEBUG] listen " + ctx + ": invalid plugin index " + (string)plugin_idx);
+            return;
+        }
+
+        string act = llList2String(plugin_ctxs, plugin_idx);
+
+        // Send link message for plugin context/action
+        list pi = llParseString2List(act, ["|"], []);
+        if(llGetListLength(pi) == 2){
+            if(DEBUG) llOwnerSay("[DEBUG] listen " + ctx + ": invoking plugin action '" + llList2String(pi,0) + "'");
+            llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
+        }
+    }
+    else if(ctx == "lock_toggle"){
+        if(msg == "Lock"){   g_locked = TRUE;  update_lock_state(); }
+        if(msg == "Unlock"){ g_locked = FALSE; update_lock_state(); }
+        if(msg == "Lock" || msg == "Unlock"){
+            integer confirm_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
+            sess_set(av, 0, "", llGetUnixTime() + dialog_timeout,
+                     "lock_confirm", "", "", "", confirm_chan);
+            string lock_state = "Collar is now ";
+            if(g_locked) lock_state += "LOCKED."; else lock_state += "UNLOCKED.";
+            llDialog(av, lock_state, [ " ", "OK", " " ], confirm_chan);
+            return;
+        }
+        if(msg == "Cancel"){ sess_clear(av); }
+    }
+    else if(ctx == "lock_confirm"){
+        if(msg == "OK"){ sess_clear(av); }
+    }
+}
 
     timer(){ timeout_check(); }
 
