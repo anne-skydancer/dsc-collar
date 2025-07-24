@@ -52,7 +52,7 @@ default
         // Generate a random 6-digit plugin serial number at runtime
         PLUGIN_SN = 100000 + (integer)(llFrand(899999));
         llMessageLinked(LINK_THIS, 500,
-            "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
+            "register" + "|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
             (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT,
             NULL_KEY);
         if (DEBUG) llOwnerSay("[PLUGIN] (" + PLUGIN_LABEL + ") Ready. Serial: " + (string)PLUGIN_SN);
