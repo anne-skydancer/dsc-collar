@@ -1,7 +1,7 @@
 /* =============================================================
    TITLE: ds_collar_core - Core logic                             
-   VERSION: 1.2 (RLV submenu support)
-   REVISION: 2025-07-15
+   VERSION: 1.2 (RLV submenu support + Access category)
+   REVISION: 2025-07-25
    ============================================================= */
 
 integer DEBUG = TRUE;
@@ -19,14 +19,13 @@ list    g_trustee_honorifics = [];
 list    g_blacklist          = [];
 integer g_public_access      = FALSE;
 integer g_locked             = FALSE;
-integer g_owner_online       = FALSE;
-key     g_wearer             = NULL_KEY;
-
 
 list    g_apps_btns;
 list    g_apps_ctxs;
 list    g_rlv_btns;
 list    g_rlv_ctxs;
+list    g_access_btns;
+list    g_access_ctxs;
 
 string  g_relay_state         = "";
 
@@ -101,173 +100,122 @@ remove_plugin(integer sn){
     }
 }
 
-display_welcome(key wearer_id)
-{
-    string line1 = "Welcome to D/s Collar.";
-    string line2;
-    string line3 = "";
-    key target;
-
-    if (g_owner == NULL_KEY)
-    {
-        line2 = "You are uncommitted to an owner.";
-    }
-    else
-    {
-        line2 = "You are owned by " + g_owner_honorific + " " + llKey2Name(g_owner) + ".";
-
-        if (g_owner_online)
-        {
-            line3 = "Your " + g_owner_honorific + " is online.";
-        }
-    }
-
-    string message = line1 + "\n" + line2;
-    if (line3 != "")
-    {
-        message += "\n" + line3;
-    }
-
-    if (wearer_id != NULL_KEY)
-    {
-        target = wearer_id;
-    }
-    else
-    {
-        target = g_wearer;
-    }
-
-    if (target != NULL_KEY)
-    {
-        llInstantMessage(target, message);
-        if (DEBUG) llOwnerSay("[CORE] Welcome message sent to wearer " + (string)target + ":\n" + message);
-    }
-    else
-    {
-        if (DEBUG) llOwnerSay("[CORE] No wearer found to send welcome message.");
-    }
-}
-
-check_owner()
-{
-    // Find wearer from session list
-    if (llGetListLength(g_sessions) >= 10)
-    {
-        g_wearer = llList2Key(g_sessions, 0);
-    }
-    else
-    {
-        g_wearer = NULL_KEY;
-    }
-
-    if (g_wearer == NULL_KEY)
-    {
-        if (DEBUG) llOwnerSay("[CORE] No wearer session found, skipping welcome.");
-        return;
-    }
-
-    if (g_owner != NULL_KEY)
-    {
-        llRequestAgentData(g_owner, DATA_ONLINE);
-    }
-    else
-    {
-        g_owner_online = FALSE;
-        display_welcome(llGetOwner());
-    }
-}
-
 /* --------- Menu builders --------- */
-list core_btns(){ return ["Status","RLV","Apps"]; }
-list core_ctxs(){ return ["status","rlv","apps"]; }
+list core_btns(){ return ["Status","RLV","Apps","Access"]; }
+list core_ctxs(){ return ["status","rlv","apps","access"]; }
 
 show_main_menu(key av)
 {
     integer acl = get_acl(av);
 
-    // Initialize menu button/ctx lists for sections
-    list core_menu_btns = core_btns();
-    list core_menu_ctxs = core_ctxs();
+    list btns = core_btns();
+    list ctxs = core_ctxs();
+
     g_apps_btns = [];
     g_apps_ctxs = [];
     g_rlv_btns = [];
     g_rlv_ctxs = [];
+    g_access_btns = [];
+    g_access_ctxs = [];
 
     // Add lock/unlock controls for owners only (ACL 1):
     if(acl == 1){
-        if(g_locked){ core_menu_btns += ["Unlock"]; core_menu_ctxs += ["unlock"]; }
-        else        { core_menu_btns += ["Lock"];   core_menu_ctxs += ["lock"];   }
+        if(g_locked){ btns += ["Unlock"]; ctxs += ["unlock"]; }
+        else        { btns += ["Lock"];   ctxs += ["lock"];   }
     }
 
-    // Place plugins in the correct section based on context (using split)
     integer i;
     for (i = 0; i < llGetListLength(g_plugins); i += 4) {
         integer min_acl = llList2Integer(g_plugins, i+2);
-        if (acl > min_acl) jump skip_p;
+        if (get_acl(av) > min_acl) jump skip_p;
         string ctx = llList2String(g_plugins, i+3);
         list parts = llParseString2List(ctx, ["_"], []);
         string section = "";
         if (llGetListLength(parts) > 0) section = llList2String(parts, 0);
 
         if (section == "core" || section == "hub") {
-            core_menu_btns += [llList2String(g_plugins, i+1)];
-            core_menu_ctxs += [ctx + "|" + (string)llList2Integer(g_plugins, i)];
+            btns += [llList2String(g_plugins, i+1)];
+            ctxs += [ctx + "|" + (string)llList2Integer(g_plugins, i)];
+            if (DEBUG) llOwnerSay("[DEBUG] Adding core plugin: " + llList2String(g_plugins, i+1));
         }
         else if (section == "apps") {
             g_apps_btns += [llList2String(g_plugins, i+1)];
             g_apps_ctxs += [ctx + "|" + (string)llList2Integer(g_plugins, i)];
+            if (DEBUG) llOwnerSay("[DEBUG] Adding apps plugin: " + llList2String(g_plugins, i+1));
         }
         else if (section == "rlv") {
             g_rlv_btns += [llList2String(g_plugins, i+1)];
             g_rlv_ctxs += [ctx + "|" + (string)llList2Integer(g_plugins, i)];
+            if (DEBUG) llOwnerSay("[DEBUG] Adding rlv plugin: " + llList2String(g_plugins, i+1));
+        }
+        else if (section == "access") {
+            g_access_btns += [llList2String(g_plugins, i+1)];
+            g_access_ctxs += [ctx + "|" + (string)llList2Integer(g_plugins, i)];
+            if (DEBUG) llOwnerSay("[DEBUG] Adding access plugin: " + llList2String(g_plugins, i+1));
         }
         @skip_p;
     }
-    while(llGetListLength(core_menu_btns) % 3 != 0) core_menu_btns += " ";
+
+    while(llGetListLength(btns) % 3 != 0) btns += " ";
+    while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
     integer chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
     sess_set(av, 0, "",
             llGetUnixTime() + dialog_timeout,
             "main", "", "",
-            llDumpList2String(core_menu_ctxs, ","), chan);
+            llDumpList2String(ctxs, ","), chan);
 
     if(g_listen_handle) llListenRemove(g_listen_handle);
     g_listen_handle = llListen(chan, "", av, "");
 
     if(DEBUG) llOwnerSay("[DEBUG] show_main_menu → " + (string)av +
-                         " chan=" + (string)chan + " btns=" + llDumpList2String(core_menu_btns, ","));
-    llDialog(av, "Select an option:", core_menu_btns, chan);
+                         " chan=" + (string)chan + " btns=" + llDumpList2String(btns, ","));
+    llDialog(av, "Select an option:", btns, chan);
 }
 
-// RLV submenu
+// --- RLV submenu ---
 show_rlv(key av, integer chan){
+    if (DEBUG) llOwnerSay("[DEBUG] show_rlv called for " + (string)av);
     if (llGetListLength(g_rlv_btns) == 0) {
-        llDialog(av, "No RLV plugins installed.", [" ", "OK", " "], chan);
+        llDialog(av, "No RLV plugins installed.", [ " ", "OK", " " ], chan);
         return;
     }
     list btns = g_rlv_btns + ["Back"];
     list ctxs = g_rlv_ctxs + ["back"];
     while (llGetListLength(btns) % 3 != 0) btns += " ";
-    sess_set(av, 0, "",
-        llGetUnixTime() + dialog_timeout,
-        "rlv", "", "",
-        llDumpList2String(ctxs, ","), chan);
+    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "rlv", "", "", llDumpList2String(ctxs, ","), chan);
     llDialog(av, "RLV Menu:", btns, chan);
 }
 
-// Apps submenu using registered apps
+// --- Apps submenu ---
 show_apps(key av, integer chan){
+    if (DEBUG) llOwnerSay("[DEBUG] show_apps called for " + (string)av);
     if (llGetListLength(g_apps_btns) == 0) {
-        llDialog(av, "No apps installed.", [" ", "OK", " "], chan);
+        llDialog(av, "No apps installed.", [ " ", "OK", " " ], chan);
         return;
     }
     list btns = g_apps_btns + ["Back"];
     list ctxs = g_apps_ctxs + ["back"];
     while (llGetListLength(btns) % 3 != 0) btns += " ";
-    sess_set(av, 0, "",
-        llGetUnixTime() + dialog_timeout,
-        "apps", "", "",
-        llDumpList2String(ctxs, ","), chan);
+    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "apps", "", "", llDumpList2String(ctxs, ","), chan);
     llDialog(av, "Apps Menu:", btns, chan);
+}
+
+// --- Access submenu ---
+show_access(key av, integer chan){
+    if (DEBUG) llOwnerSay("[DEBUG] show_access called for " + (string)av);
+    if (llGetListLength(g_access_btns) == 0) {
+        llDialog(av, "No Access plugins installed.", [ " ", "OK", " " ], chan);
+        return;
+    }
+    list btns = g_access_btns + ["Back"];
+    list ctxs = g_access_ctxs + ["back"];
+    while (llGetListLength(btns) % 3 != 0) btns += " ";
+    while (llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+    sess_set(av, 0, "", llGetUnixTime() + dialog_timeout, "access", "", "", llDumpList2String(ctxs, ","), chan);
+    llDialog(av, "Access Menu:", btns, chan);
 }
 
 /* --------- Dialogs --------- */
@@ -290,7 +238,7 @@ show_status(key av, integer chan)
     if(g_locked)        t += "Locked: YES\n";
     else                t += "Locked: NO\n";
 
-    llDialog(av, t, [" ", "OK", " "], chan);
+    llDialog(av, t, [ " ", "OK", " " ], chan);
 }
 
 show_lock_dialog(key av, integer chan){
@@ -298,10 +246,10 @@ show_lock_dialog(key av, integer chan){
     list buttons;
     if(g_locked){
         txt = "The collar is currently LOCKED.\nUnlock the collar?";
-        buttons = ["Unlock", "Cancel"];
+        buttons = [ "Unlock", " ", "Cancel" ];
     }else{
         txt = "The collar is currently UNLOCKED.\nLock the collar?";
-        buttons = ["Lock", "Cancel"];
+        buttons = [ "Lock", " ", "Cancel" ];
     }
     while(llGetListLength(buttons) % 3 != 0) buttons += " ";
     sess_set(av, 0, "", llGetUnixTime() + dialog_timeout,
@@ -360,24 +308,6 @@ default
         llSetTimerEvent(1.0);
         update_lock_state();
         llMessageLinked(LINK_THIS, 530, "relay_load", NULL_KEY);
-        if (llGetAttached() != 0)
-        {
-            key wearer = llGetOwner();
-            display_welcome(wearer);
-            check_owner();
-        }
-    }
-    
-    attach(key id)
-    {
-        if (llGetAttached() !=0)
-        {
-            check_owner();
-        }
-        else
-        {
-            if (DEBUG) llOwnerSay ("[CORE} Collar detached.");
-        }
     }
 
     touch_start(integer n)
@@ -386,11 +316,11 @@ default
         integer acl = get_acl(toucher);
 
         if (acl == 5) {
-            llDialog(toucher, "This collar is restricted.", ["OK"], -1);
+            llDialog(toucher, "This collar is restricted.", [ " ", "OK", " " ], -1);
             return;
         }
         if (acl == 4 && !g_public_access) {
-            llDialog(toucher, "This collar is restricted.", ["OK"], -1);
+            llDialog(toucher, "This collar is restricted.", [ " ", "OK", " " ], -1);
             return;
         }
         show_main_menu(toucher);
@@ -491,6 +421,8 @@ default
         string menucsv = llList2String(s, 7);
 
         if(ctx == "main"){
+            if (DEBUG) llOwnerSay("[DEBUG] listen main menu: user=" + (string)av + ", msg=" + msg);
+
             list ctxs = llParseString2List(menucsv, [","], []);
             list btns = core_btns();
             if(get_acl(av) == 1){
@@ -510,12 +442,17 @@ default
             while(llGetListLength(btns) % 3 != 0) btns += " ";
 
             integer sel = llListFindList(btns, [msg]);
-            if(sel == -1) return;
+            if(sel == -1) {
+                if (DEBUG) llOwnerSay("[DEBUG] listen main menu: unknown button msg=" + msg);
+                return;
+            }
             string act = llList2String(ctxs, sel);
+            if (DEBUG) llOwnerSay("[DEBUG] listen main menu: resolved action=" + act);
 
             if(act == "status"){ show_status(av, llList2Integer(s,8)); return; }
             if(act == "rlv"){ show_rlv(av, llList2Integer(s,8)); return; }
             if(act == "apps"){   show_apps(av, llList2Integer(s,8));   return; }
+            if(act == "access"){ show_access(av, llList2Integer(s,8)); return; }
             if(act == "lock" || act == "unlock"){ show_lock_dialog(av, llList2Integer(s,8)); return; }
 
             list pi = llParseString2List(act, ["|"], []);
@@ -524,13 +461,19 @@ default
             }
         }
         else if(ctx == "rlv"){
-            // RLV submenu
+            if (DEBUG) llOwnerSay("[DEBUG] listen rlv menu: user=" + (string)av + ", msg=" + msg);
             list ctxs = llParseString2List(menucsv, [","], []);
             list btns = g_rlv_btns + ["Back"];
             while(llGetListLength(btns) % 3 != 0) btns += " ";
+            while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
             integer sel = llListFindList(btns, [msg]);
-            if(sel == -1) return;
+            if(sel == -1) {
+                if (DEBUG) llOwnerSay("[DEBUG] listen rlv menu: unknown button msg=" + msg);
+                return;
+            }
             string act = llList2String(ctxs, sel);
+            if (DEBUG) llOwnerSay("[DEBUG] listen rlv menu: resolved action=" + act);
 
             if(act == "back"){
                 show_main_menu(av);
@@ -542,13 +485,43 @@ default
             }
         }
         else if(ctx == "apps"){
-            // Apps submenu
+            if (DEBUG) llOwnerSay("[DEBUG] listen apps menu: user=" + (string)av + ", msg=" + msg);
             list ctxs = llParseString2List(menucsv, [","], []);
             list btns = g_apps_btns + ["Back"];
             while(llGetListLength(btns) % 3 != 0) btns += " ";
+            while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
             integer sel = llListFindList(btns, [msg]);
-            if(sel == -1) return;
+            if(sel == -1) {
+                if (DEBUG) llOwnerSay("[DEBUG] listen apps menu: unknown button msg=" + msg);
+                return;
+            }
             string act = llList2String(ctxs, sel);
+            if (DEBUG) llOwnerSay("[DEBUG] listen apps menu: resolved action=" + act);
+
+            if(act == "back"){
+                show_main_menu(av);
+                return;
+            }
+            list pi = llParseString2List(act, ["|"], []);
+            if(llGetListLength(pi) == 2){
+                llMessageLinked(LINK_THIS, 510, llList2String(pi, 0) + "|" + (string)av + "|" + (string)llList2Integer(s,8), NULL_KEY);
+            }
+        }
+        else if(ctx == "access"){
+            if (DEBUG) llOwnerSay("[DEBUG] listen access menu: user=" + (string)av + ", msg=" + msg);
+            list ctxs = llParseString2List(menucsv, [","], []);
+            list btns = g_access_btns + ["Back"];
+            while(llGetListLength(btns) % 3 != 0) btns += " ";
+            while(llGetListLength(ctxs) % 3 != 0) ctxs += " ";
+
+            integer sel = llListFindList(btns, [msg]);
+            if(sel == -1) {
+                if (DEBUG) llOwnerSay("[DEBUG] listen access menu: unknown button msg=" + msg);
+                return;
+            }
+            string act = llList2String(ctxs, sel);
+            if (DEBUG) llOwnerSay("[DEBUG] listen access menu: resolved action=" + act);
 
             if(act == "back"){
                 show_main_menu(av);
@@ -568,7 +541,7 @@ default
                          "lock_confirm", "", "", "", confirm_chan);
                 string lock_state = "Collar is now ";
                 if(g_locked) lock_state += "LOCKED."; else lock_state += "UNLOCKED.";
-                llDialog(av, lock_state, ["OK"], confirm_chan);
+                llDialog(av, lock_state, [ " ", "OK", " " ], confirm_chan);
                 return;
             }
             if(msg == "Cancel"){ sess_clear(av); }
@@ -582,13 +555,9 @@ default
 
     changed(integer change)
     {
-        /* ============================================================
-           BLOCK: OWNER CHANGE RESET HANDLER
-           Resets on owner change, no rebroadcast.
-           ============================================================ */
         if (change & CHANGED_OWNER)
         {
-            llOwnerSay("[GUH] Collar owner changed. Resetting core.");
+            llOwnerSay("[CORE] Collar owner changed. Resetting core.");
             llResetScript();
         }
     }
