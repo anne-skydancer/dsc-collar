@@ -1,62 +1,17 @@
-/* =============================================================
-   TITLE: ds_collar_animate - Avatar posing (Universal Template)
-   VERSION: 1.1-U (Universal Template, dynamic serial, best practices)
-   REVISION: 2025-07-18
-   ============================================================= */
-
-/* ================= UNIVERSAL HEADER ================= */
+// Animate Plugin: GUH logic, navigation at 0-2, Relax at 3, anims at 4-11, Main returns to GUH
 
 integer DEBUG = TRUE;
-integer PLUGIN_SN = 0;  // Will be set in state_entry()
+integer PLUGIN_SN = 1002;
 string  PLUGIN_LABEL = "Animate";
 integer PLUGIN_MIN_ACL = 4;
 string  PLUGIN_CONTEXT = "apps_animate";
 
 integer g_has_perm = FALSE;
-
-// Session management variables
-list    g_sessions;
-
-// Animate plugin specific globals
+integer g_menu_chan = 0;
+key     g_menu_user = NULL_KEY;
+integer g_anim_page = 0;
 integer g_page_size = 8; // 8 anims per page (indices 4-11)
 list    g_anims;
-
-/* ----------------- SESSION HELPERS ----------------- */
-integer s_idx(key av) { return llListFindList(g_sessions, [av]); }
-
-integer s_set(key av, integer page, string csv, float expiry, string ctx, string param, string step, string menucsv, integer chan)
-{
-    integer i = s_idx(av);
-    if (~i) {
-        integer old_listen = llList2Integer(g_sessions, i+9);
-        if (old_listen != -1) llListenRemove(old_listen);
-        g_sessions = llDeleteSubList(g_sessions, i, i+9);
-    }
-    integer listen_handle = llListen(chan, "", av, "");
-    g_sessions += [av, page, csv, expiry, ctx, param, step, menucsv, chan, listen_handle];
-    return TRUE;
-}
-
-integer s_clear(key av)
-{
-    integer i = s_idx(av);
-    if (~i) {
-        integer old_listen = llList2Integer(g_sessions, i+9);
-        if (old_listen != -1) llListenRemove(old_listen);
-        g_sessions = llDeleteSubList(g_sessions, i, i+9);
-    }
-    return TRUE;
-}
-
-list s_get(key av)
-{
-    integer i = s_idx(av);
-    if (~i) return llList2List(g_sessions, i, i+9);
-    return [];
-}
-/* ----------------- SESSION HELPERS END ----------------- */
-
-/* =============== ANIMATE PLUGIN HELPERS =============== */
 
 get_anims()
 {
@@ -80,6 +35,7 @@ show_anim_menu(key user, integer page)
         llDialog(user, "No animations in collar.", ["OK"], -1);
         return;
     }
+    g_anim_page = page;
 
     // Calculate anims for this page
     integer start = page * g_page_size;
@@ -107,34 +63,29 @@ show_anim_menu(key user, integer page)
     // Ensure exactly 12 buttons (indices 0–11)
     while (llGetListLength(btns) < 12) btns += " ";
 
-    integer dialog_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
-    float expiry = llGetUnixTime() + 180.0;
-
-    // Store session with current page as 'page' and context as PLUGIN_CONTEXT
-    s_set(user, page, "", expiry, PLUGIN_CONTEXT, "", "", "", dialog_chan);
-
+    g_menu_chan = (integer)(-1000000.0 * llFrand(1.0) - 1.0);
+    g_menu_user = user;
+    llListenRemove(g_menu_chan);
+    llListen(g_menu_chan, "", user, "");
     llDialog(user,
         "Animations (Page " + (string)(page + 1) + "):\n"
         + "Select an animation to play or Relax to stop all.\n"
         + "Navigation: << prev | Main | next >>",
-        btns, dialog_chan);
+        btns, g_menu_chan);
 
     if (DEBUG) llOwnerSay("[Animate] Menu → " + (string)user
-        + " page=" + (string)page + " chan=" + (string)dialog_chan
+        + " page=" + (string)page + " chan=" + (string)g_menu_chan
         + " btns=" + llDumpList2String(btns, ","));
 }
 
-start_anim(key av, string anim)
+start_anim(string anim)
 {
     if (g_has_perm)
     {
         llStartAnimation(anim);
         if (DEBUG) llOwnerSay("[DEBUG] Playing animation: " + anim);
-        // Refresh menu for user
-        list sess = s_get(av);
-        integer page = 0;
-        if (llGetListLength(sess) > 0) page = llList2Integer(sess,1);
-        show_anim_menu(av, page);
+        // Keep menu open for user
+        show_anim_menu(g_menu_user, g_anim_page);
     }
     else
     {
@@ -154,45 +105,31 @@ stop_all_anims()
     if (DEBUG) llOwnerSay("[DEBUG] Stopped all animations.");
 }
 
-timeout_check()
-{
-    integer now = llGetUnixTime();
-    integer i = 0;
-    while (i < llGetListLength(g_sessions)) {
-        float expiry = llList2Float(g_sessions, i+3);
-        key av = llList2Key(g_sessions, i);
-        if (now > expiry) {
-            llInstantMessage(av, "Menu timed out. Please try again.");
-            s_clear(av);
-        } else {
-            i += 10;
-        }
-    }
-}
-
-/* ================== MAIN EVENT LOOP ================== */
 default
 {
     state_entry()
     {
-        PLUGIN_SN = 100000 + (integer)(llFrand(899999));
-        llMessageLinked(LINK_THIS, 500,
-            "register"  "|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
-            (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT,
-            NULL_KEY);
         llRequestPermissions(llGetOwner(), PERMISSION_TRIGGER_ANIMATION);
-        if (DEBUG) llOwnerSay("[ANIMATE] Plugin ready. Serial: " + (string)PLUGIN_SN);
-        llSetTimerEvent(1.0);
+        llMessageLinked(LINK_THIS, 500,
+            "register" + "|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|"
+            + (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT,
+            NULL_KEY);
+        if (DEBUG) llOwnerSay("[ANIMATE] Plugin ready.");
     }
 
     run_time_permissions(integer perm)
     {
-        if (perm & PERMISSION_TRIGGER_ANIMATION)
-            g_has_perm = TRUE;
+        if (perm & PERMISSION_TRIGGER_ANIMATION) g_has_perm = TRUE;
     }
 
     link_message(integer sn, integer num, string str, key id)
     {
+        // PATCHED: Only respond to reset, do not broadcast further
+        if (num == -900 && str == "reset_owner")
+        {
+            llResetScript();
+            return;
+        }
         // GUH: "apps_animate|user|chan"
         list p = llParseString2List(str, ["|"], []);
         if (llList2String(p, 0) == PLUGIN_CONTEXT && llGetListLength(p) >= 3)
@@ -204,42 +141,37 @@ default
 
     listen(integer chan, string name, key id, string msg)
     {
-        list sess = s_get(id);
-        if (llGetListLength(sess) == 0) return;
-        integer dialog_chan = llList2Integer(sess, 8);
-        if (chan != dialog_chan) return;
-
-        integer page = llList2Integer(sess, 1);
-
-        if (msg == "<<") { show_anim_menu(id, page - 1); return; }
-        if (msg == ">>") { show_anim_menu(id, page + 1); return; }
-        if (msg == "Main")
+        if (chan == g_menu_chan && id == g_menu_user)
         {
-            // Return to main menu in GUH (link_message 510 is the plugin signal used)
-            llMessageLinked(LINK_THIS, 510, "apps" + "|" + (string)id + "|" + "0", NULL_KEY);
-            return;
+            if (msg == "<<") { show_anim_menu(g_menu_user, g_anim_page - 1); return; }
+            if (msg == ">>") { show_anim_menu(g_menu_user, g_anim_page + 1); return; }
+            if (msg == "Main")
+            {
+                // Return to main menu in GUH (link_message 510 is the plugin signal used)
+                llMessageLinked(LINK_THIS, 510, "main|" + (string)g_menu_user + "|0", NULL_KEY);
+                return;
+            }
+            if (msg == "Relax")
+            {
+                stop_all_anims();
+                show_anim_menu(g_menu_user, g_anim_page);
+                return;
+            }
+            integer idx = llListFindList(g_anims, [msg]);
+            if (idx != -1)
+            {
+                start_anim(msg);
+                return;
+            }
         }
-        if (msg == "Relax")
-        {
-            stop_all_anims();
-            show_anim_menu(id, page);
-            return;
-        }
-        integer idx = llListFindList(g_anims, [msg]);
-        if (idx != -1)
-        {
-            start_anim(id, msg);
-            return;
-        }
-    }
-
-    timer()
-    {
-        timeout_check();
     }
 
     changed(integer change)
     {
+        /* ============================================================
+           BLOCK: OWNER CHANGE RESET HANDLER
+           Resets on owner change, no rebroadcast.
+           ============================================================ */
         if (change & CHANGED_OWNER)
         {
             llOwnerSay("[ANIMATE] Owner changed. Resetting animate plugin.");
