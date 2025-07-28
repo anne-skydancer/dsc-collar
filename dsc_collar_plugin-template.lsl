@@ -1,6 +1,6 @@
 // =============================================================
 //  UNIVERSAL PLUGIN TEMPLATE - Linden Script Language (LSL)
-//  Auto-randomizes plugin serial at runtime
+//  Compliant with DS Collar Core 1.4+
 // =============================================================
 
 integer DEBUG = TRUE;
@@ -50,33 +50,52 @@ default
     state_entry()
     {
         // Generate a random 6-digit plugin serial number at runtime
-        PLUGIN_SN = 100000 + (integer)(llFrand(899999));
-        llMessageLinked(LINK_THIS, 500,
-            "register" + "|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
-            (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT,
-            NULL_KEY);
+        if (PLUGIN_SN == 0)
+            PLUGIN_SN = 100000 + (integer)(llFrand(899999));
         if (DEBUG) llOwnerSay("[PLUGIN] (" + PLUGIN_LABEL + ") Ready. Serial: " + (string)PLUGIN_SN);
         llSetTimerEvent(1.0);
     }
 
     link_message(integer sn, integer num, string str, key id)
     {
-        // Plugin-specific menu/context handlers go here!
+        // Registration protocol: respond to poll (500)
+        if ((num == 500) && llSubStringIndex(str, "register_now" + "|") == 0)
+        {
+            string script_req = llGetSubString(str, 13, -1);
+            if (script_req == llGetScriptName())
+            {
+                llMessageLinked(LINK_THIS, 501,
+                    "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
+                    (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT + "|" + llGetScriptName(),
+                    NULL_KEY);
+                if (DEBUG) llOwnerSay("[PLUGIN] (" + PLUGIN_LABEL + ") Registration reply sent to core (501).");
+            }
+            return;
+        }
+        // Unregistration protocol, if you implement dynamic remove
+        if ((num == 502) && llSubStringIndex(str, "unregister|") == 0)
+        {
+            llMessageLinked(LINK_THIS, 502,
+                "unregister|" + (string)PLUGIN_SN,
+                NULL_KEY);
+            if (DEBUG) llOwnerSay("[PLUGIN] (" + PLUGIN_LABEL + ") Unregister notification sent to core (502).");
+            return;
+        }
+        // Plugin-specific logic here
     }
 
     listen(integer chan, string nm, key av, string msg)
     {
-        // Dialog/menu handler stub.
         list s = s_get(av);
         if (llGetListLength(s) == 0) return;
         if (chan != llList2Integer(s,8)) return;
         string ctx = llList2String(s,4);
-        // Add plugin dialog logic here.
+        // Add plugin dialog/menu logic here
     }
 
     timer()
     {
-        // Plugin timer stub.
+        // Session timeout logic
         integer now = llGetUnixTime();
         integer i = 0;
         while (i < llGetListLength(g_sessions)) {
