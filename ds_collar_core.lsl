@@ -1,7 +1,7 @@
 /* =============================================================
-   TITLE: ds_collar_core - Core logic                             
-   VERSION: 1.3 (Plugin registration queue added)
-   REVISION: 2025-07-25 (Lock button duplication fix)
+   TITLE: ds_collar_core - Core logic
+   VERSION: 1.4 (Plugin registry soft-reset, re-registration protocol)
+   REVISION: 2025-07-28 (Implements plugin re-registration on add/remove)
    ============================================================= */
 
 integer DEBUG = TRUE;
@@ -32,7 +32,92 @@ integer g_owner_online = FALSE;
 integer g_welcome_sent = FALSE;
 integer g_was_attached = FALSE;
 
-/* -------- Plugin registration queue -------- */
+/* -------- Plugin reset scrupt  -------- */
+
+reset_all_plugins()
+{
+    if (DEBUG) llOwnerSay("[CORE] Soft-reset: requesting plugins to re-register.");
+    // Ask all plugins to re-register. This uses 500 and register_now| as per protocol.
+    integer n = llGetInventoryNumber(INVENTORY_SCRIPT);
+    integer i;
+    for (i = 0; i < n; ++i)
+    {
+        string script = llGetInventoryName(INVENTORY_SCRIPT, i);
+        if (script != llGetScriptName()) // Don't send to self
+        {
+            llMessageLinked(LINK_THIS, 500, "register_now" + "|" + script, NULL_KEY);
+        }
+    }
+    // Optionally clear the plugin list and queue to force rebuild:
+    g_plugins = [];
+    g_plugin_queue = [];
+    g_registering = FALSE;
+}
+
+/* -------- Plugin scanning logic -------- */
+
+scan_for_plugins()
+{
+    list scripts = [];
+    integer n = llGetInventoryNumber(INVENTORY_SCRIPT);
+    integer i;
+    for (i = 0; i < n; ++i)
+        scripts += [llGetInventoryName(INVENTORY_SCRIPT, i)];
+
+    list registered_scripts = [];
+    for (i = 0; i < llGetListLength(g_plugins); i += 4)
+        registered_scripts += llList2String(g_plugins, i+3); // Assumes 4th element is script name
+
+    // If a plugin script in registry is missing from inventory, trigger soft reset
+    integer mismatch = FALSE;
+    for (i = 0; i < llGetListLength(registered_scripts); ++i)
+    {
+        if (llListFindList(scripts, [llList2String(registered_scripts, i)]) == -1)
+        {
+            mismatch = TRUE;
+            jump found_mismatch;
+        }
+    }
+@found_mismatch;
+    if (mismatch)
+    {
+        if (DEBUG) llOwnerSay("[CORE] Plugin script(s) missing. Triggering soft reset.");
+        reset_all_plugins(); // Triggers plugin re-registration
+    }
+}
+
+/* -------- Plugin registration/soft-reset helpers -------- */
+
+integer g_plugin_count = 0;         // Number of registered plugins
+integer g_plugins_changed = FALSE;  // Flag for soft-reset trigger
+integer g_first_boot = TRUE;        // Suppress soft reset on first load
+
+add_plugin(integer sn, string label, integer min_acl, string ctx)
+{
+    integer old_count = llGetListLength(g_plugins) / 4;
+    integer i;
+    for(i=0; i<llGetListLength(g_plugins); i+=4){
+        if(llList2Integer(g_plugins, i) == sn)
+            g_plugins = llDeleteSubList(g_plugins, i, i+3);
+    }
+    g_plugins += [sn, label, min_acl, ctx];
+    integer new_count = llGetListLength(g_plugins) / 4;
+    if(old_count != new_count && !g_first_boot) g_plugins_changed = TRUE;
+    g_plugin_count = new_count;
+}
+
+remove_plugin(integer sn)
+{
+    integer old_count = llGetListLength(g_plugins) / 4;
+    integer i;
+    for(i=0; i<llGetListLength(g_plugins); i+=4){
+        if(llList2Integer(g_plugins, i) == sn)
+            g_plugins = llDeleteSubList(g_plugins, i, i+3);
+    }
+    integer new_count = llGetListLength(g_plugins) / 4;
+    if(old_count != new_count && !g_first_boot) g_plugins_changed = TRUE;
+    g_plugin_count = new_count;
+}
 
 list g_plugin_queue = [];
 integer g_registering = FALSE;
@@ -108,12 +193,6 @@ check_owner_online()
 
 /* --------- Small helpers --------- */
 
-reset_all_plugins()
-{
-    llOwnerSay("Collar: resetting all modules...");
-    llMessageLinked(LINK_SET, -900, "reset_owner", NULL_KEY);
-}
-
 integer s_idx(key av) { 
     return llListFindList(g_sessions, [av]); 
 }
@@ -160,26 +239,9 @@ integer get_acl(key av){
     return 5;
 }
 
-/* --------- Plugin registry helpers --------- */
-add_plugin(integer sn, string label, integer min_acl, string ctx){
-    integer i;
-    for(i=0; i<llGetListLength(g_plugins); i+=4){
-        if(llList2Integer(g_plugins, i) == sn)
-            g_plugins = llDeleteSubList(g_plugins, i, i+3);
-    }
-    g_plugins += [sn, label, min_acl, ctx];
-}
-remove_plugin(integer sn){
-    integer i;
-    for(i=0; i<llGetListLength(g_plugins); i+=4){
-        if(llList2Integer(g_plugins, i) == sn)
-            g_plugins = llDeleteSubList(g_plugins, i, i+3);
-    }
-}
-
 /* --------- Menu builders --------- */
-list core_btns(){ return ["Status","RLV","Apps","Access"]; }  // <-- PATCHED
-list core_ctxs(){ return ["status","rlv","apps","access"]; }  // <-- PATCHED
+list core_btns(){ return ["Status","RLV","Apps","Access"]; }
+list core_ctxs(){ return ["status","rlv","apps","access"]; }
 
 show_main_menu(key av)
 {
@@ -371,7 +433,6 @@ timeout_check(){
 /* --------- Default state --------- */
 default
 {
-    
     dataserver(key query_id, string data)
     {
         if (data == "1")
@@ -410,6 +471,17 @@ default
         llSetTimerEvent(1.0);
         update_lock_state();
         llMessageLinked(LINK_THIS, 530, "relay_load", NULL_KEY);
+        integer n = llGetInventoryNumber(INVENTORY_SCRIPT);
+        integer i;
+        for (i= 0; i < n; ++i)
+        {
+            string script = llGetInventoryName(INVENTORY_SCRIPT, i);
+            if (script != llGetScriptName())
+            {
+                llMessageLinked(LINK_THIS, 500, "register_now" + "|" + script, NULL_KEY);
+                if (DEBUG) llOwnerSay("[CORE} register_now sent: register_now" + "|" + script);
+            }
+        }
         g_was_attached = (llGetAttached() !=0);
         if (g_was_attached && !g_welcome_sent)
         {
@@ -417,7 +489,6 @@ default
             g_welcome_sent = TRUE;
             if(DEBUG) llOwnerSay("[DEBUG] Welcome messages sent on attach (timer detection).");
         }
-            
     }
 
     touch_start(integer n)
@@ -438,34 +509,32 @@ default
 
     link_message(integer sn, integer num, string str, key id)
     {
-        // -- Reset handler: accept broadcast, do not rebroadcast --
-        if(num == -900 && str == "reset_owner")
+        // Plugin registration (plugin -> core)
+        if(num == 501)
         {
-            llResetScript();
-            return;
-        }
-
-        if(num == 500)
-        {
+            if(str == "core_soft_reset") return; // Ignore our own message sent to plugins
             list p = llParseStringKeepNulls(str, ["|"], []);
             if(llGetListLength(p) >= 5 && llList2String(p, 0) == "register")
             {
-                integer sn = (integer)llList2Integer(p, 1);
-                string label = llList2String(p, 2);
-                integer min_acl = (integer)llList2Integer(p, 3);
-                string ctx = llList2String(p, 4);
+                integer rsn      = (integer)llList2String(p, 1);
+                string  label    = llList2String(p, 2);
+                integer min_acl  = (integer)llList2String(p, 3);
+                string  ctx      = llList2String(p, 4);
 
-                // Enqueue plugin registration
-                g_plugin_queue += [sn, label, min_acl, ctx];
-                
-                if (!g_registering)
-                {
-                    process_next_plugin();
-                }
+                add_plugin(rsn, label, min_acl, ctx);
+                if(DEBUG) llOwnerSay("[CORE] Registered plugin: " + label + " (" + (string)rsn + ")");
             }
         }
-        else if(num == 501 && str == "unregister"){ 
-            remove_plugin(sn); 
+        // Plugin unregistration (plugin -> core)
+        else if(num == 502)
+        {
+            list p = llParseStringKeepNulls(str, ["|"], []);
+            if(llGetListLength(p) >= 2 && llList2String(p, 0) == "unregister")
+            {
+                integer rsn = (integer)llList2String(p, 1);
+                remove_plugin(rsn);
+                if(DEBUG) llOwnerSay("[CORE] Unregistered plugin SN: " + (string)rsn);
+            }
         }
         else if(num == 520)
         {
@@ -645,7 +714,7 @@ default
 
     timer()
     {
-        integer attached = (llGetAttached() !=0);
+        integer attached = (llGetAttached() != 0);
         if (attached && !g_was_attached)
         {
             if(!g_welcome_sent)
@@ -655,7 +724,6 @@ default
                 if (DEBUG) llOwnerSay("[DEBUG] Welcome messages sent on attach (timer detection).");
             }
         }
-        
         if (g_registering)
         {
             process_next_plugin();
@@ -664,9 +732,18 @@ default
         {
             timeout_check();
         }
+        // Soft reset: if plugin list changed, request all plugins to reregister
+        if(g_plugins_changed)
+        {
+            g_plugins_changed = FALSE;
+            llMessageLinked(LINK_SET, 501, "core_soft_reset", NULL_KEY);
+            if(DEBUG) llOwnerSay("[CORE] Plugins changed, soft reset: requesting plugin re-registration.");
+        }
+        if(g_first_boot && llGetTime() > 5.0)
+            g_first_boot = FALSE;
     }
 
-changed(integer change)
+    changed(integer change)
     {
         integer attached = (llGetAttached() != 0);
         if (attached && !g_welcome_sent)
@@ -686,5 +763,6 @@ changed(integer change)
             llOwnerSay("[CORE] Collar owner changed. Resetting core.");
             llResetScript();
         }
+        // No registry logic in changed()—handled by plugin add/remove
     }
 }
