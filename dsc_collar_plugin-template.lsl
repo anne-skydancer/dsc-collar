@@ -61,11 +61,6 @@ default
 
     link_message(integer sn, integer num, string str, key id)
     {
-        if (num == -900 && str == "reset_owner")
-        {
-            llResetScript();
-            return;
-        }
         // Plugin-specific menu/context handlers go here!
     }
 
