@@ -65,7 +65,7 @@ default
             if (script_req == llGetScriptName())
             {
                 llMessageLinked(LINK_THIS, 501,
-                    "register|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
+                    "register" + "|" + (string)PLUGIN_SN + "|" + PLUGIN_LABEL + "|" +
                     (string)PLUGIN_MIN_ACL + "|" + PLUGIN_CONTEXT + "|" + llGetScriptName(),
                     NULL_KEY);
                 if (DEBUG) llOwnerSay("[PLUGIN] (" + PLUGIN_LABEL + ") Registration reply sent to core (501).");
@@ -73,10 +73,10 @@ default
             return;
         }
         // Unregistration protocol, if you implement dynamic remove
-        if ((num == 502) && llSubStringIndex(str, "unregister|") == 0)
+        if ((num == 502) && llSubStringIndex(str, "unregister" + "|") == 0)
         {
             llMessageLinked(LINK_THIS, 502,
-                "unregister|" + (string)PLUGIN_SN,
+                "unregister" + "|" + (string)PLUGIN_SN,
                 NULL_KEY);
             if (DEBUG) llOwnerSay("[PLUGIN] (" + PLUGIN_LABEL + ") Unregister notification sent to core (502).");
             return;
